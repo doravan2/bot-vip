@@ -1,0 +1,8 @@
+{
+  "name": "chat bot - Painel de Automação de Afiliados",
+  "description": "Painel de automação do chat bot para WhatsApp, sincronização de grupos, fontes de clonagem e conversão oficial de marketplaces.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
