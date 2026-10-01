@@ -179,16 +179,16 @@ export const ReplicaZapModal: React.FC<ReplicaZapModalProps> = ({
           </button>
         </div>
 
-        {/* Watermark AI Shield Banner */}
+        {/* Watermark Shield Banner */}
         <div className="p-2.5 rounded-xl bg-gradient-to-r from-emerald-500/10 via-amber-500/10 to-orange-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
             <span className="font-bold text-[11px] text-emerald-200">
-              Filtro Anti-Marca d'Água Ativo (Visão IA) &bull; Remove avatares, usernames (@gustavohoffmannofc) e busca foto limpa HD oficial no marketplace
+              Filtro Anti-Marca d'Água Ativo &bull; Remove avatares, usernames de concorrentes e busca foto limpa HD oficial no marketplace
             </span>
           </div>
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-            PROTEÇÃO IA
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
+            FILTRO ATIVO
           </span>
         </div>
 

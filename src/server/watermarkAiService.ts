@@ -4,12 +4,14 @@ import { GoogleGenAI } from '@google/genai';
 
 export interface WatermarkConfig {
   enabled: boolean;
-  action: 'replace_clean_photo' | 'remove_watermark_ai' | 'skip_message';
+  action: 'replace_clean_photo';
   knownUsernames: string[];
   detectAvatarBadges: boolean;
   detectVerifiedCheckmark: boolean;
   replaceTextHandle?: boolean;
   userHandle?: string;
+  appliedGroups?: string[];
+  allGroupsActive?: boolean;
 }
 
 const storageDir = path.resolve(process.cwd(), '.whatsapp_auth');
@@ -23,6 +25,8 @@ const DEFAULT_CONFIG: WatermarkConfig = {
   detectVerifiedCheckmark: true,
   replaceTextHandle: true,
   userHandle: '',
+  appliedGroups: [],
+  allGroupsActive: false,
 };
 
 let inMemoryConfig: WatermarkConfig = { ...DEFAULT_CONFIG };
@@ -30,7 +34,7 @@ let inMemoryConfig: WatermarkConfig = { ...DEFAULT_CONFIG };
 try {
   if (fs.existsSync(configFilePath)) {
     const raw = fs.readFileSync(configFilePath, 'utf-8');
-    inMemoryConfig = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    inMemoryConfig = { ...DEFAULT_CONFIG, ...JSON.parse(raw), action: 'replace_clean_photo' };
   }
 } catch {
   inMemoryConfig = { ...DEFAULT_CONFIG };
@@ -38,6 +42,18 @@ try {
 
 export function getWatermarkConfig(): WatermarkConfig {
   return inMemoryConfig;
+}
+
+export function isWatermarkActiveForGroup(groupNameOrJid: string): boolean {
+  const config = getWatermarkConfig();
+  if (!config.enabled) return false;
+  if (config.allGroupsActive) return true;
+  if (!config.appliedGroups || config.appliedGroups.length === 0) return false;
+  const cleanTarget = groupNameOrJid.toLowerCase().trim();
+  return config.appliedGroups.some((g) => {
+    const cleanG = g.toLowerCase().trim();
+    return cleanTarget.includes(cleanG) || cleanG.includes(cleanTarget);
+  });
 }
 
 export function saveWatermarkConfig(updates: Partial<WatermarkConfig>): WatermarkConfig {

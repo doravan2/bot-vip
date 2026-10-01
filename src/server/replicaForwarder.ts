@@ -105,6 +105,15 @@ try {
 }
 
 export function getActiveSourceRules(): ActiveSourceRule[] {
+  if (inMemoryRules.length === 0 && fs.existsSync(rulesFilePath)) {
+    try {
+      const raw = fs.readFileSync(rulesFilePath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        inMemoryRules = parsed;
+      }
+    } catch {}
+  }
   return inMemoryRules;
 }
 

@@ -36,7 +36,8 @@ import {
   getWhatsAppChannels,
   sendDirectReplicaDeal,
   dispatchPendingMeliOffer,
-  triggerFullSourceSweep,
+  handleIncomingTelegramMessage,
+  executeReplicaPipeline,
 } from './src/server/baileysService.ts';
 import {
   getActiveSourceRules,
@@ -89,6 +90,10 @@ import {
   cleanTelegramChatId,
   isTelegramTarget,
   resolveTelegramChatId,
+  startTelegramPolling,
+  stopTelegramPolling,
+  isTelegramPollingRunning,
+  processTelegramUpdate,
 } from './src/server/telegramService.ts';
 import {
   getWatermarkConfig,
@@ -96,10 +101,9 @@ import {
   detectWatermarkOnImage,
 } from './src/server/watermarkAiService.ts';
 import {
-  getSweepSummary,
-  runSweepForRule,
-  clearSweepPendingItems,
-} from './src/server/sweepService.ts';
+  loadChatFilterConfig,
+  saveChatFilterConfig,
+} from './src/server/chatFilterService.ts';
 
 dotenv.config();
 
@@ -111,7 +115,9 @@ console.error = (...args: any[]) => {
     fullText.includes('Bad MAC') ||
     fullText.includes('Failed to decrypt') ||
     fullText.includes('Session error') ||
-    fullText.includes('bad mac')
+    fullText.includes('bad mac') ||
+    fullText.includes('Cannot derive from empty media key') ||
+    fullText.includes('empty media key')
   ) {
     return;
   }
@@ -120,7 +126,13 @@ console.error = (...args: any[]) => {
 
 process.on('unhandledRejection', (reason: any) => {
   const msg = String(reason?.message || reason || '');
-  if (msg.includes('Bad MAC') || msg.includes('Failed to decrypt') || msg.includes('Session error')) {
+  if (
+    msg.includes('Bad MAC') ||
+    msg.includes('Failed to decrypt') ||
+    msg.includes('Session error') ||
+    msg.includes('Cannot derive from empty media key') ||
+    msg.includes('empty media key')
+  ) {
     return;
   }
   console.error('[Unhandled Rejection]', reason);
@@ -128,7 +140,13 @@ process.on('unhandledRejection', (reason: any) => {
 
 process.on('uncaughtException', (err: any) => {
   const msg = String(err?.message || err || '');
-  if (msg.includes('Bad MAC') || msg.includes('Failed to decrypt') || msg.includes('Session error')) {
+  if (
+    msg.includes('Bad MAC') ||
+    msg.includes('Failed to decrypt') ||
+    msg.includes('Session error') ||
+    msg.includes('Cannot derive from empty media key') ||
+    msg.includes('empty media key')
+  ) {
     return;
   }
   console.error('[Uncaught Exception]', err);
@@ -145,6 +163,11 @@ app.use(express.json({ limit: '10mb' }));
 // Start the real Baileys WhatsApp WebSocket on server boot
 initBaileysSocket().catch((err) => {
   console.error('[Server] Erro inicial ao iniciar Baileys:', err);
+});
+
+// Start continuous Telegram group & channel listening (Telegram -> WhatsApp)
+startTelegramPolling().catch((err) => {
+  console.warn('[Server] Aviso ao iniciar escuta de canais do Telegram:', err);
 });
 
 // Health check route
@@ -166,6 +189,16 @@ app.get('/api/watermark/config', (_req, res) => {
 
 app.post('/api/watermark/config', (req, res) => {
   const updated = saveWatermarkConfig(req.body || {});
+  res.json({ success: true, config: updated });
+});
+
+// Chat Filter Configuration Routes
+app.get('/api/chat-filter/config', (_req, res) => {
+  res.json({ success: true, config: loadChatFilterConfig() });
+});
+
+app.post('/api/chat-filter/config', (req, res) => {
+  const updated = saveChatFilterConfig(req.body || {});
   res.json({ success: true, config: updated });
 });
 
@@ -280,76 +313,6 @@ app.post('/api/affiliate/settings', (req, res) => {
     success: true,
     settings: updated,
   });
-});
-
-// Varredura Inteligente (Sweep) de produtos nos grupos fonte
-app.post('/api/replica/sweep', async (_req, res) => {
-  try {
-    const sweepResult = await triggerFullSourceSweep();
-    return res.json(sweepResult);
-  } catch (err: any) {
-    console.error('[Server] Erro ao executar varredura:', err);
-    return res.status(500).json({
-      success: false,
-      error: err?.message || 'Falha ao executar varredura de produtos.',
-    });
-  }
-});
-
-// GET Sweep summary & rule breakdown
-app.get('/api/replica/sweep-summary', (_req, res) => {
-  return res.json({
-    success: true,
-    ...getSweepSummary(),
-  });
-});
-
-// POST Run sweep for a specific rule
-app.post('/api/replica/sweep-rule', async (req, res) => {
-  try {
-    const { ruleId } = req.body || {};
-    if (!ruleId) {
-      return res.status(400).json({ error: 'ruleId é obrigatório' });
-    }
-    const result = await runSweepForRule(ruleId);
-    return res.json({
-      success: true,
-      ...result,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || 'Falha ao executar varredura da regra.' });
-  }
-});
-
-// POST Dispatch sweep items for a specific rule or source group to a selected target group/channel
-app.post('/api/replica/dispatch-rule-sweep', async (req, res) => {
-  try {
-    const { ruleId, targetOverride, sourceGroupFilter } = req.body || {};
-    if (!ruleId) {
-      return res.status(400).json({ error: 'ruleId é obrigatório' });
-    }
-    const sweepResult = await triggerFullSourceSweep();
-    return res.json({
-      ...sweepResult,
-      message: `Produtos ${sourceGroupFilter ? `da fonte "${sourceGroupFilter}"` : 'da regra'} disparados com sucesso para ${targetOverride || 'os canais de destino'}!`,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || 'Falha ao disparar produtos da regra.' });
-  }
-});
-
-// POST Dispatch ALL accumulated sweep items at once
-app.post('/api/replica/dispatch-all-sweep', async (_req, res) => {
-  try {
-    const sweepResult = await triggerFullSourceSweep();
-    clearSweepPendingItems();
-    return res.json({
-      ...sweepResult,
-      message: 'Todos os produtos acumulados foram disparados com sucesso!',
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || 'Falha ao disparar produtos acumulados.' });
-  }
 });
 
 // Dedicated VIP Group Invite Link endpoint
@@ -849,6 +812,64 @@ app.get('/api/replica/logs', (_req, res) => {
   });
 });
 
+// Simulate incoming deal from either WhatsApp or Telegram source
+app.post('/api/replica/simulate-incoming', async (req, res) => {
+  try {
+    const { sourceName, rawText, imageUrl } = req.body || {};
+    const rules = getActiveSourceRules();
+    const cleanSrcName = (sourceName || '').toLowerCase().trim();
+
+    const matchedRule = rules.find((r) => {
+      const candidates = [r.sourceName, ...(Array.isArray(r.sourceNames) ? r.sourceNames : [])]
+        .flatMap((s) => s.split(','))
+        .map((s) => s.trim().toLowerCase());
+      return candidates.some((c) => c === cleanSrcName || c.includes(cleanSrcName) || cleanSrcName.includes(c));
+    }) || rules[0];
+
+    if (!matchedRule) {
+      return res.status(400).json({ success: false, error: 'Nenhuma regra de monitoramento encontrada.' });
+    }
+
+    const isTelegramSource =
+      matchedRule.platform === 'Telegram' ||
+      matchedRule.sourcePlatforms?.includes('Telegram') ||
+      cleanSrcName.includes('telegram') ||
+      cleanSrcName.startsWith('@');
+
+    let imageBuffer: Buffer | null = null;
+    if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('http')) {
+      try {
+        const imgRes = await fetch(imageUrl);
+        if (imgRes.ok) {
+          const ab = await imgRes.arrayBuffer();
+          imageBuffer = Buffer.from(ab);
+        }
+      } catch {}
+    }
+
+    if (isTelegramSource) {
+      const result = await handleIncomingTelegramMessage({
+        rawText: rawText || '🔥 Oferta Teste Telegram: https://www.mercadolivre.com.br/p/MLB12345678',
+        imageBuffer,
+        chatId: matchedRule.sourceJid || '@telegram_fonte',
+        chatTitle: sourceName || matchedRule.sourceName,
+      });
+      return res.json(result);
+    } else {
+      const result = await executeReplicaPipeline({
+        matchedRule,
+        rawCaption: rawText || '🔥 Oferta Teste WhatsApp: https://www.mercadolivre.com.br/p/MLB12345678',
+        imageBuffer,
+        sourceDisplayTitle: sourceName || matchedRule.sourceName,
+        sourcePlatform: 'WhatsApp',
+      });
+      return res.json(result);
+    }
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Erro ao simular mensagem de entrada.' });
+  }
+});
+
 // Marketplaces Credentials & Direct Cookies API
 app.get('/api/marketplaces/config', (_req, res) => {
   return res.json({
@@ -1157,6 +1178,72 @@ app.delete('/api/telegram/channels/:id', (req, res) => {
     const { id } = req.params;
     const updated = removeTelegramChannel(id);
     return res.json({ success: true, channels: updated, message: 'Canal do Telegram removido com sucesso.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Telegram Polling Listener status & controls
+app.get('/api/telegram/polling-status', (_req, res) => {
+  const status = isTelegramPollingRunning();
+  const config = getTelegramConfig();
+  return res.json({
+    success: true,
+    ...status,
+    botConnected: config.status === 'connected',
+    activeBotUsername: config.botInfo?.username,
+  });
+});
+
+app.post('/api/telegram/polling/start', async (_req, res) => {
+  await startTelegramPolling();
+  return res.json({ success: true, message: 'Escuta de mensagens do Telegram iniciada com sucesso!' });
+});
+
+app.post('/api/telegram/polling/stop', (_req, res) => {
+  stopTelegramPolling();
+  return res.json({ success: true, message: 'Escuta de mensagens do Telegram pausada.' });
+});
+
+// Telegram Official Webhook receiver (optional alternative to polling)
+app.post('/api/telegram/webhook', async (req, res) => {
+  try {
+    const update = req.body;
+    const result = await processTelegramUpdate(update);
+    return res.json(result);
+  } catch (err: any) {
+    console.error('[Telegram Webhook] Erro ao processar:', err);
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Simulate Telegram message incoming (Telegram -> WhatsApp manual test)
+app.post('/api/telegram/simulate-incoming', async (req, res) => {
+  try {
+    const { rawText, chatTitle, chatId, chatUsername, imageUrl } = req.body || {};
+    let imageBuffer: Buffer | null = null;
+
+    if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('http')) {
+      try {
+        const fetchRes = await fetch(imageUrl);
+        if (fetchRes.ok) {
+          const ab = await fetchRes.arrayBuffer();
+          imageBuffer = Buffer.from(ab);
+        }
+      } catch (imgErr) {
+        console.warn('[Telegram Simulate] Aviso ao baixar imagem de teste:', imgErr);
+      }
+    }
+
+    const result = await handleIncomingTelegramMessage({
+      rawText: rawText || '🔥 Oferta Teste Telegram: https://www.mercadolivre.com.br/p/MLB12345678',
+      imageBuffer,
+      chatId: chatId || '@atacadogameofertas',
+      chatTitle: chatTitle || 'Atacado Game Ofertas',
+      chatUsername: chatUsername || 'atacadogameofertas',
+    });
+
+    return res.json(result);
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message });
   }

@@ -36,12 +36,6 @@ export const NAV_ITEMS: NavItemConfig[] = [
     description: 'Integrações Mercado Livre, Shopee, Amazon',
   },
   {
-    id: 'produtos',
-    label: 'Produtos',
-    icon: Layers,
-    description: 'Varredura e envio de ofertas pendentes dos grupos fonte',
-  },
-  {
     id: 'grupos',
     label: 'Grupos',
     icon: Users2,

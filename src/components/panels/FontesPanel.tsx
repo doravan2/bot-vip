@@ -74,44 +74,26 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
   const [validateMeliStock, setValidateMeliStock] = useState(true);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-  // Sweep state for Fontes cards matching exemplo.jpg
-  const [ruleSweepData, setRuleSweepData] = useState<Record<string, { totalUnsent: number; breakdownBySource: Record<string, number>; lastChecked?: string }>>({});
-  const [isSweepingRuleId, setIsSweepingRuleId] = useState<string | null>(null);
-  const [expandedRuleSweepId, setExpandedRuleSweepId] = useState<string | null>(null);
+  const [telegramPollingStatus, setTelegramPollingStatus] = useState<{
+    active: boolean;
+    botConnected: boolean;
+    activeBotUsername?: string;
+  } | null>(null);
 
   useEffect(() => {
-    fetch('/api/replica/sweep-summary')
+    fetch('/api/telegram/polling-status')
       .then((res) => res.json())
       .then((data) => {
-        if (data.ruleData) {
-          setRuleSweepData(data.ruleData);
+        if (data.success) {
+          setTelegramPollingStatus({
+            active: data.active,
+            botConnected: data.botConnected,
+            activeBotUsername: data.activeBotUsername,
+          });
         }
       })
       .catch(() => {});
   }, []);
-
-  const handleRunRuleSweep = async (ruleId: string) => {
-    setIsSweepingRuleId(ruleId);
-    try {
-      const res = await fetch('/api/replica/sweep-rule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ruleId }),
-      });
-      const data = await res.json();
-      if (data.success && data.ruleData) {
-        setRuleSweepData((prev) => ({
-          ...prev,
-          [ruleId]: data.ruleData,
-        }));
-        setExpandedRuleSweepId(ruleId);
-      }
-    } catch (err) {
-      console.error('Erro na varredura da regra:', err);
-    } finally {
-      setIsSweepingRuleId(null);
-    }
-  };
 
   // Telegram synced channels state
   const [telegramSyncedGroups, setTelegramSyncedGroups] = useState<GroupChannel[]>([]);
@@ -532,6 +514,66 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
         </button>
       </div>
 
+      {/* Telegram Live Listener Status Banner */}
+      <div className="p-4 rounded-2xl bg-[#141518] border border-[#22242a] flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-lg">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#0088cc]/15 border border-[#0088cc]/30 flex items-center justify-center text-[#29b6f6] shrink-0">
+            <Send className="w-5 h-5" />
+          </div>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black text-white">Escuta de Grupos/Canais do Telegram:</span>
+              {telegramPollingStatus?.active ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#00c978]/15 border border-[#00c978]/40 text-[#00c978]">
+                  ATIVA (LONG-POLLING)
+                </span>
+              ) : telegramPollingStatus?.botConnected ? (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/15 border border-amber-500/40 text-amber-400">
+                  CONECTADO
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-neutral-800 border border-neutral-700 text-neutral-400">
+                  DESCONECTADO
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              {telegramPollingStatus?.botConnected
+                ? `Bot @${telegramPollingStatus.activeBotUsername || 'Telegram'} conectado. Mensagens enviadas em grupos/canais fontes do Telegram são capturadas e enviadas ao WhatsApp automaticamente!`
+                : 'Conecte seu bot do Telegram na aba Conexões para ativar o monitoramento automático de grupos do Telegram.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const res = await fetch('/api/telegram/simulate-incoming', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chatTitle: 'Atacado Game Ofertas',
+                    chatId: '@atacadogameofertas',
+                    rawText: '⚡ Super Oferta Telegram: https://www.mercadolivre.com.br/p/MLB12345678 com 30% OFF!',
+                  }),
+                });
+                const d = await res.json();
+                alert(d.success ? `✅ Sucesso! Mensagem capturada do Telegram e enviada ao WhatsApp!` : `Aviso: ${d.error || 'Verifique se há regras ativas'}`);
+              } catch (err: any) {
+                alert(`Erro ao testar: ${err?.message}`);
+              }
+            }}
+            className="px-3.5 py-2 rounded-xl bg-[#1e2026] hover:bg-[#282a34] text-neutral-300 hover:text-white text-xs font-bold border border-[#282a34] transition cursor-pointer flex items-center gap-1.5"
+            title="Simular mensagem recebida no Telegram e enviada para o WhatsApp"
+          >
+            <Send className="w-3.5 h-3.5 text-[#29b6f6]" />
+            <span>Testar Telegram ➔ WhatsApp</span>
+          </button>
+        </div>
+      </div>
+
       {/* Fontes Cards List */}
       {sourceGroups.length === 0 ? (
         <div className="p-12 rounded-3xl bg-[#141517] border border-[#22242a] text-center space-y-4">
@@ -843,72 +885,13 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
                     </div>
                   </div>
 
-                  {/* Metric Line matching exemplo.jpg */}
-                  <div className="space-y-3 pt-1">
-                    <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-                      <div className="flex items-center gap-2 font-bold text-neutral-300">
-                        <span>
-                          Capturados Hoje: <strong className="text-white">{source.dealsCapturedToday || 0} ofertas</strong>
-                        </span>
-                        <span className="text-neutral-600">|</span>
-                        <span>
-                          Total Não Enviados: <strong className="text-amber-400 font-extrabold">{ruleSweepData[source.id]?.totalUnsent || 0} produtos</strong>
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleRunRuleSweep(source.id)}
-                          disabled={isSweepingRuleId === source.id}
-                          className="px-3.5 py-2 rounded-xl bg-[#1e1f26] hover:bg-[#282a34] text-white text-xs font-bold border border-[#2c2f3a] hover:border-[#FF5722] transition cursor-pointer flex items-center gap-1.5 shadow-xs disabled:opacity-50"
-                        >
-                          <Search className={`w-3.5 h-3.5 text-[#FF5722] ${isSweepingRuleId === source.id ? 'animate-spin' : ''}`} />
-                          <span>{isSweepingRuleId === source.id ? 'Analisando...' : 'Começar Varredura'}</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setExpandedRuleSweepId(expandedRuleSweepId === source.id ? null : source.id)}
-                          className="p-2 rounded-xl bg-[#1e1f26] hover:bg-[#282a34] text-neutral-400 hover:text-white border border-[#2c2f3a] transition cursor-pointer flex items-center justify-center"
-                          title="Ver contagem por grupo fonte"
-                        >
-                          <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${expandedRuleSweepId === source.id ? 'rotate-180 text-[#FF5722]' : ''}`} />
-                        </button>
-                      </div>
+                  {/* Metric Line */}
+                  <div className="pt-1">
+                    <div className="flex items-center gap-2 text-xs font-bold text-neutral-300">
+                      <span>
+                        Capturados Hoje: <strong className="text-white">{source.dealsCapturedToday || 0} ofertas</strong>
+                      </span>
                     </div>
-
-                    {/* Collapsible Accordion Drawer */}
-                    {expandedRuleSweepId === source.id && (
-                      <div className="p-3.5 rounded-xl bg-[#0b0c0e] border border-[#22242a] space-y-2 text-xs animate-in fade-in duration-150">
-                        <div className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider flex items-center justify-between border-b border-[#1f2026] pb-2">
-                          <span>Aguardando envio por grupo fonte</span>
-                          <span className="text-[10px] text-[#FF5722] font-mono">
-                            Última checagem: {ruleSweepData[source.id]?.lastChecked || 'Recente'}
-                          </span>
-                        </div>
-
-                        <div className="space-y-1.5 pt-1">
-                          {sourcesList.map((srcName, sIdx) => {
-                            const count = ruleSweepData[source.id]?.breakdownBySource?.[srcName] ?? 0;
-                            return (
-                              <div
-                                key={`breakdown-${source.id}-${sIdx}`}
-                                className="flex items-center justify-between p-2 rounded-lg bg-[#141518] border border-[#1f2026]"
-                              >
-                                <span className="font-bold text-neutral-200 flex items-center gap-2">
-                                  <span className="w-2 h-2 rounded-full bg-[#FF5722]" />
-                                  {srcName}
-                                </span>
-                                <span className="font-mono text-xs font-black text-amber-400">
-                                  {count} {count === 1 ? 'mensagem acumulada' : 'mensagens acumuladas'}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
                   </div>
 
                   {/* Test feedback */}

@@ -4,7 +4,6 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { Header } from './components/Header.tsx';
 import { ReplicaZapModal } from './components/ReplicaZapModal.tsx';
 import { MarketplacesPanel } from './components/panels/MarketplacesPanel.tsx';
-import { ProdutosPanel } from './components/panels/ProdutosPanel.tsx';
 import { GruposPanel } from './components/panels/GruposPanel.tsx';
 import { CanaisPanel } from './components/panels/CanaisPanel.tsx';
 import { ConexoesPanel } from './components/panels/ConexoesPanel.tsx';
@@ -442,17 +441,7 @@ export default function App() {
           {/* TAB 1: Marketplaces */}
           {currentTab === 'marketplaces' && <MarketplacesPanel />}
 
-          {/* TAB 2: Produtos & Varredura */}
-          {currentTab === 'produtos' && (
-            <ProdutosPanel
-              sourceGroups={sourceGroups}
-              groups={groups}
-              onNavigateToFontes={() => setCurrentTab('fontes')}
-              onNavigateToConexoes={() => setCurrentTab('conexoes')}
-            />
-          )}
-
-          {/* TAB 3: Grupos */}
+          {/* TAB 2: Grupos */}
           {currentTab === 'grupos' && (
             <GruposPanel
               groups={groups}

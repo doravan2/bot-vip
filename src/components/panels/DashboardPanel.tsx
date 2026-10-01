@@ -177,10 +177,10 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
               <p className="text-xs text-neutral-400">Distribuição dos 296 disparos realizados</p>
             </div>
             <button
-              onClick={() => onNavigateToTab('produtos')}
+              onClick={() => onNavigateToTab('fontes')}
               className="text-xs text-[#FF5722] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
             >
-              Ver produtos <ArrowUpRight className="w-3.5 h-3.5" />
+              Ver fontes <ArrowUpRight className="w-3.5 h-3.5" />
             </button>
           </div>
 

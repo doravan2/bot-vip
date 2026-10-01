@@ -24,9 +24,13 @@ import {
   Scan,
   Upload,
   Plus,
-  Trash2,
   AlertCircle,
   Image as ImageIcon,
+  Users2,
+  Search,
+  Megaphone,
+  X,
+  Scissors,
 } from 'lucide-react';
 import { GroupChannel } from '../../types/index.ts';
 import { DEFAULT_VIP_GROUP_LINK } from '../../utils/affiliateEngine.ts';
@@ -48,10 +52,12 @@ interface MarketplacesConfigState {
 
 interface WatermarkConfigState {
   enabled: boolean;
-  action: 'replace_clean_photo' | 'remove_watermark_ai' | 'skip_message';
+  action: 'replace_clean_photo';
   knownUsernames: string[];
   detectAvatarBadges: boolean;
   detectVerifiedCheckmark: boolean;
+  appliedGroups?: string[];
+  allGroupsActive?: boolean;
 }
 
 export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
@@ -59,8 +65,8 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
   vipGroupLink,
   onUpdateVipGroupLink,
 }) => {
-  // Tabs: 'rules' | 'connections' | 'watermark'
-  const [activeTab, setActiveTab] = useState<'rules' | 'connections' | 'watermark'>('rules');
+  // Tabs: 'rules' | 'connections' | 'watermark' | 'chat_filter'
+  const [activeTab, setActiveTab] = useState<'rules' | 'connections' | 'watermark' | 'chat_filter'>('rules');
 
   // Marketplaces config state
   const [mpConfig, setMpConfig] = useState<MarketplacesConfigState>({});
@@ -73,24 +79,36 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
     knownUsernames: ['@gustavohoffmannofc', 'gustavohoffmannofc'],
     detectAvatarBadges: true,
     detectVerifiedCheckmark: true,
+    appliedGroups: [],
+    allGroupsActive: false,
   });
   const [isSavingWm, setIsSavingWm] = useState(false);
   const [wmSaveNotice, setWmSaveNotice] = useState(false);
-  const [newHandleInput, setNewHandleInput] = useState('');
+  const [customGroupInput, setCustomGroupInput] = useState('');
 
-  // Watermark Detector Tester state
-  const [testBase64, setTestBase64] = useState<string>('');
-  const [testMime, setTestMime] = useState<string>('image/jpeg');
-  const [testImagePreview, setTestImagePreview] = useState<string | null>(null);
-  const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<{
-    hasWatermark?: boolean;
-    detectedHandles?: string[];
-    hasAvatarBadge?: boolean;
-    hasVerifiedCheckmark?: boolean;
-    confidence?: number;
-    reason?: string;
-  } | null>(null);
+  // Chat Filter Config state
+  const [chatFilterConfig, setChatFilterConfig] = useState<{
+    enabled: boolean;
+    appliedGroups: string[];
+    allGroupsActive: boolean;
+    removeAsteriskHeaders: boolean;
+    removeUnitPriceHooks: boolean;
+    excludedPhrases: string[];
+  }>({
+    enabled: true,
+    appliedGroups: [],
+    allGroupsActive: false,
+    removeAsteriskHeaders: true,
+    removeUnitPriceHooks: true,
+    excludedPhrases: ['*SÓ R$11,66 CADA 😱*'],
+  });
+  const [isSavingChatFilter, setIsSavingChatFilter] = useState(false);
+  const [chatFilterSaveNotice, setChatFilterSaveNotice] = useState(false);
+  const [customChatGroupInput, setCustomChatGroupInput] = useState('');
+  const [newExcludedPhraseInput, setNewExcludedPhraseInput] = useState('');
+
+  // Groups of operation for watermark & chat filters
+  const [allAvailableGroups, setAllAvailableGroups] = useState<Array<{ id: string; name: string; type: string }>>([]);
 
   // Fetch Watermark config
   const fetchWatermarkConfig = async () => {
@@ -107,8 +125,24 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
     }
   };
 
+  // Fetch Chat Filter config
+  const fetchChatFilterConfig = async () => {
+    try {
+      const res = await fetch('/api/chat-filter/config');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.config) {
+          setChatFilterConfig(data.config);
+        }
+      }
+    } catch (e) {
+      console.error('Erro ao buscar chat filter config:', e);
+    }
+  };
+
   useEffect(() => {
     fetchWatermarkConfig();
+    fetchChatFilterConfig();
   }, []);
 
   const handleSaveWatermarkConfig = async (updatedConfig?: Partial<WatermarkConfigState>) => {
@@ -135,79 +169,215 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
     }
   };
 
-  const handleAddUsername = () => {
-    const handle = newHandleInput.trim();
-    if (!handle) return;
-    const current = watermarkConfig.knownUsernames || [];
-    if (!current.includes(handle)) {
-      const updated = [...current, handle];
-      setWatermarkConfig((prev) => ({ ...prev, knownUsernames: updated }));
-      handleSaveWatermarkConfig({ knownUsernames: updated });
+  // Fetch and sync all groups, channels and source rules
+  useEffect(() => {
+    const list: Array<{ id: string; name: string; type: string }> = [];
+
+    // From props (WhatsApp & Telegram groups)
+    if (Array.isArray(groups)) {
+      groups.forEach((g) => {
+        if (!list.some((item) => item.name === g.name)) {
+          list.push({ id: g.id || g.name, name: g.name, type: g.platform === 'Telegram' ? 'Telegram' : 'WhatsApp' });
+        }
+      });
     }
-    setNewHandleInput('');
+
+    // From WhatsApp channels
+    fetch('/api/whatsapp/channels')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.channels && Array.isArray(data.channels)) {
+          data.channels.forEach((c: any) => {
+            if (!list.some((item) => item.name === c.name)) {
+              list.push({ id: c.id || c.name, name: c.name, type: 'Canal WhatsApp' });
+            }
+          });
+        }
+      })
+      .catch(() => {});
+
+    // From Telegram channels
+    fetch('/api/telegram/channels')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.channels && Array.isArray(data.channels)) {
+          data.channels.forEach((c: any) => {
+            const title = c.title || c.username;
+            if (title && !list.some((item) => item.name === title)) {
+              list.push({ id: c.chatId || title, name: title, type: 'Canal Telegram' });
+            }
+          });
+        }
+      })
+      .catch(() => {});
+
+    // From Source Rules
+    fetch('/api/rules')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.rules && Array.isArray(data.rules)) {
+          data.rules.forEach((rule: any) => {
+            const name = rule.sourceName || rule.targetGroup;
+            if (name && !list.some((item) => item.name === name)) {
+              list.push({ id: rule.id || name, name, type: 'Grupo Fonte' });
+            }
+          });
+        }
+      })
+      .catch(() => {});
+
+    setAllAvailableGroups(list);
+  }, [groups]);
+
+  const handleAddGroupWatermark = (groupName: string) => {
+    const trimmed = groupName.trim();
+    if (!trimmed) return;
+    const current = watermarkConfig.appliedGroups || [];
+    if (!current.includes(trimmed)) {
+      const updated = {
+        ...watermarkConfig,
+        appliedGroups: [...current, trimmed],
+        allGroupsActive: false,
+      };
+      setWatermarkConfig(updated);
+      handleSaveWatermarkConfig(updated);
+    }
   };
 
-  const handleRemoveUsername = (handleToRemove: string) => {
-    const updated = (watermarkConfig.knownUsernames || []).filter((h) => h !== handleToRemove);
-    setWatermarkConfig((prev) => ({ ...prev, knownUsernames: updated }));
-    handleSaveWatermarkConfig({ knownUsernames: updated });
+  const handleAddCustomGroup = () => {
+    if (!customGroupInput.trim()) return;
+    handleAddGroupWatermark(customGroupInput);
+    setCustomGroupInput('');
   };
 
-  const handleFileUploadAndAnalyze = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const mime = file.type || 'image/jpeg';
-    setTestMime(mime);
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const resultStr = event.target?.result as string;
-      setTestImagePreview(resultStr);
-      setTestBase64(resultStr);
-      runImageAnalysis(resultStr, mime);
+  const handleRemoveGroupWatermark = (groupName: string) => {
+    const current = watermarkConfig.appliedGroups || [];
+    const updated = {
+      ...watermarkConfig,
+      appliedGroups: current.filter((g) => g !== groupName),
+      allGroupsActive: false,
     };
-    reader.readAsDataURL(file);
+    setWatermarkConfig(updated);
+    handleSaveWatermarkConfig(updated);
   };
 
-  const runImageAnalysis = async (base64String: string, mime: string) => {
-    setIsAnalyzingImage(true);
-    setAnalysisResult(null);
+  const handleToggleAllGroupsActive = (val: boolean) => {
+    const updated = {
+      ...watermarkConfig,
+      allGroupsActive: val,
+    };
+    setWatermarkConfig(updated);
+    handleSaveWatermarkConfig(updated);
+  };
+
+  const handleClearAllGroups = () => {
+    const updated = {
+      ...watermarkConfig,
+      appliedGroups: [],
+      allGroupsActive: false,
+    };
+    setWatermarkConfig(updated);
+    handleSaveWatermarkConfig(updated);
+  };
+
+  const handleSaveChatFilterConfig = async (updatedConfig?: Partial<typeof chatFilterConfig>) => {
+    setIsSavingChatFilter(true);
+    const payload = updatedConfig ? { ...chatFilterConfig, ...updatedConfig } : chatFilterConfig;
     try {
-      const res = await fetch('/api/watermark/detect', {
+      const res = await fetch('/api/chat-filter/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          base64Data: base64String,
-          mimeType: mime,
-        }),
+        body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (data.success) {
-        setAnalysisResult({
-          hasWatermark: data.hasWatermark,
-          detectedHandles: data.detectedHandles || [],
-          hasAvatarBadge: data.hasAvatarBadge,
-          hasVerifiedCheckmark: data.hasVerifiedCheckmark,
-          confidence: data.confidence,
-          reason: data.reason,
-        });
-      } else {
-        setAnalysisResult({
-          hasWatermark: false,
-          confidence: 0,
-          reason: data.error || 'Erro na análise da imagem',
-        });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.config) {
+          setChatFilterConfig(data.config);
+        }
+        setChatFilterSaveNotice(true);
+        setTimeout(() => setChatFilterSaveNotice(false), 3000);
       }
-    } catch (err: any) {
-      setAnalysisResult({
-        hasWatermark: false,
-        confidence: 0,
-        reason: err?.message || 'Falha ao conectar com serviço de visão IA',
-      });
+    } catch (e) {
+      console.error('Erro ao salvar chat filter config:', e);
     } finally {
-      setIsAnalyzingImage(false);
+      setIsSavingChatFilter(false);
     }
+  };
+
+  const handleAddGroupChatFilter = (groupName: string) => {
+    const trimmed = groupName.trim();
+    if (!trimmed) return;
+    const current = chatFilterConfig.appliedGroups || [];
+    if (!current.includes(trimmed)) {
+      const updated = {
+        ...chatFilterConfig,
+        appliedGroups: [...current, trimmed],
+        allGroupsActive: false,
+      };
+      setChatFilterConfig(updated);
+      handleSaveChatFilterConfig(updated);
+    }
+  };
+
+  const handleAddCustomChatGroup = () => {
+    if (!customChatGroupInput.trim()) return;
+    handleAddGroupChatFilter(customChatGroupInput);
+    setCustomChatGroupInput('');
+  };
+
+  const handleRemoveGroupChatFilter = (groupName: string) => {
+    const current = chatFilterConfig.appliedGroups || [];
+    const updated = {
+      ...chatFilterConfig,
+      appliedGroups: current.filter((g) => g !== groupName),
+      allGroupsActive: false,
+    };
+    setChatFilterConfig(updated);
+    handleSaveChatFilterConfig(updated);
+  };
+
+  const handleToggleAllChatGroupsActive = (val: boolean) => {
+    const updated = {
+      ...chatFilterConfig,
+      allGroupsActive: val,
+    };
+    setChatFilterConfig(updated);
+    handleSaveChatFilterConfig(updated);
+  };
+
+  const handleClearAllChatGroups = () => {
+    const updated = {
+      ...chatFilterConfig,
+      appliedGroups: [],
+      allGroupsActive: false,
+    };
+    setChatFilterConfig(updated);
+    handleSaveChatFilterConfig(updated);
+  };
+
+  const handleAddExcludedPhrase = () => {
+    const phrase = newExcludedPhraseInput.trim();
+    if (!phrase) return;
+    const current = chatFilterConfig.excludedPhrases || [];
+    if (!current.includes(phrase)) {
+      const updated = {
+        ...chatFilterConfig,
+        excludedPhrases: [...current, phrase],
+      };
+      setChatFilterConfig(updated);
+      handleSaveChatFilterConfig(updated);
+    }
+    setNewExcludedPhraseInput('');
+  };
+
+  const handleRemoveExcludedPhrase = (phraseToRemove: string) => {
+    const current = chatFilterConfig.excludedPhrases || [];
+    const updated = {
+      ...chatFilterConfig,
+      excludedPhrases: current.filter((p) => p !== phraseToRemove),
+    };
+    setChatFilterConfig(updated);
+    handleSaveChatFilterConfig(updated);
   };
 
   // Global VIP link
@@ -572,7 +742,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
           }`}
         >
           <Eye className="w-4 h-4" />
-          <span>Filtro Anti-Marca d'Água (IA)</span>
+          <span>Filtro Anti-Marca d'Água</span>
           <span
             className={`px-2 py-0.5 rounded-full text-[10px] font-mono border ${
               watermarkConfig.enabled
@@ -581,6 +751,30 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
             }`}
           >
             {watermarkConfig.enabled ? 'ATIVO' : 'PAUSADO'}
+          </span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTab('chat_filter');
+            fetchChatFilterConfig();
+          }}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+            activeTab === 'chat_filter'
+              ? 'bg-[#FF5722] text-white shadow-lg shadow-[#FF5722]/20'
+              : 'bg-[#141517] text-neutral-400 hover:text-white hover:bg-[#1a1b1f]'
+          }`}
+        >
+          <Scissors className="w-4 h-4" />
+          <span>Filtro de Chat</span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-[10px] font-mono border ${
+              chatFilterConfig.enabled
+                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+            }`}
+          >
+            {chatFilterConfig.enabled ? 'ATIVO' : 'PAUSADO'}
           </span>
         </button>
       </div>
@@ -1281,7 +1475,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
         </div>
       )}
 
-      {/* TAB 3: FILTRO ANTI-MARCA D'ÁGUA (VISÃO IA) */}
+      {/* TAB 3: FILTRO ANTI-MARCA D'ÁGUA */}
       {activeTab === 'watermark' && (
         <div className="space-y-6 animate-in fade-in">
           {/* Header Card */}
@@ -1294,7 +1488,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                   </div>
                   <div>
                     <h2 className="text-base font-extrabold text-white">
-                      Filtro Anti-Marca d'Água do Concorrente (Visão IA)
+                      Filtro Anti-Marca d'Água do Concorrente
                     </h2>
                     <p className="text-xs text-neutral-400">
                       Examina imagens de ofertas capturadas de canais/grupos para identificar selos, avatares circulares e usernames.
@@ -1332,301 +1526,486 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
               </div>
             )}
 
-            {/* Grid Settings */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Left: Action Selection & Options */}
-              <div className="space-y-4">
-                <label className="text-xs font-extrabold text-white uppercase tracking-wider block">
-                  Ação ao Detectar Marca d'Água de Concorrente
-                </label>
-
-                <div className="space-y-2.5">
-                  <label
-                    onClick={() => {
-                      setWatermarkConfig((p) => ({ ...p, action: 'replace_clean_photo' }));
-                      handleSaveWatermarkConfig({ action: 'replace_clean_photo' });
-                    }}
-                    className={`flex items-start gap-3 p-3.5 rounded-xl border text-xs cursor-pointer transition ${
-                      watermarkConfig.action === 'replace_clean_photo'
-                        ? 'bg-[#1e1f24] border-[#FF5722] text-white'
-                        : 'bg-[#18191d] border-[#252730] text-neutral-400 hover:border-[#353846]'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="action"
-                      checked={watermarkConfig.action === 'replace_clean_photo'}
-                      onChange={() => {}}
-                      className="mt-0.5 accent-[#FF5722]"
-                    />
-                    <div>
-                      <span className="font-bold text-white block">📸 Substituir por Foto Limpa HD Oficial</span>
-                      <span className="text-[11px] text-neutral-400">
-                        Busca automaticamente a foto original sem marca d'água direto na página do produto do marketplace.
-                      </span>
-                    </div>
-                  </label>
-
-                  <label
-                    onClick={() => {
-                      setWatermarkConfig((p) => ({ ...p, action: 'remove_watermark_ai' }));
-                      handleSaveWatermarkConfig({ action: 'remove_watermark_ai' });
-                    }}
-                    className={`flex items-start gap-3 p-3.5 rounded-xl border text-xs cursor-pointer transition ${
-                      watermarkConfig.action === 'remove_watermark_ai'
-                        ? 'bg-[#1e1f24] border-[#FF5722] text-white'
-                        : 'bg-[#18191d] border-[#252730] text-neutral-400 hover:border-[#353846]'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="action"
-                      checked={watermarkConfig.action === 'remove_watermark_ai'}
-                      onChange={() => {}}
-                      className="mt-0.5 accent-[#FF5722]"
-                    />
-                    <div>
-                      <span className="font-bold text-white block">✨ Limpeza Inteligente via Visão IA</span>
-                      <span className="text-[11px] text-neutral-400">
-                        Remove o overlay de selo/avatar e reprocessa a imagem com o modelo de IA.
-                      </span>
-                    </div>
-                  </label>
-
-                  <label
-                    onClick={() => {
-                      setWatermarkConfig((p) => ({ ...p, action: 'skip_message' }));
-                      handleSaveWatermarkConfig({ action: 'skip_message' });
-                    }}
-                    className={`flex items-start gap-3 p-3.5 rounded-xl border text-xs cursor-pointer transition ${
-                      watermarkConfig.action === 'skip_message'
-                        ? 'bg-[#1e1f24] border-[#FF5722] text-white'
-                        : 'bg-[#18191d] border-[#252730] text-neutral-400 hover:border-[#353846]'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="action"
-                      checked={watermarkConfig.action === 'skip_message'}
-                      onChange={() => {}}
-                      className="mt-0.5 accent-[#FF5722]"
-                    />
-                    <div>
-                      <span className="font-bold text-white block">🚫 Pular Publicação da Oferta</span>
-                      <span className="text-[11px] text-neutral-400">
-                        Ignora completamente a mensagem e cancela o disparo caso a foto contenha a marca do concorrente.
-                      </span>
-                    </div>
-                  </label>
+            {/* AÇÃO PRINCIPAL: SUBSTITUIR POR FOTO LIMPA HD OFICIAL */}
+            <div className="p-4 sm:p-5 rounded-2xl border border-[#FF5722] bg-[#1e1f24] text-xs shadow-md space-y-2">
+              <div className="flex items-start gap-3.5">
+                <div className="w-6 h-6 rounded-full bg-[#FF5722] flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm">
+                  <Camera className="w-3.5 h-3.5" />
                 </div>
-
-                <div className="pt-2 space-y-2.5">
-                  <label className="text-xs font-extrabold text-white uppercase tracking-wider block">
-                    Detectores Visuais Ativos
-                  </label>
-
-                  <label className="flex items-center gap-3 p-3 bg-[#18191d] border border-[#252730] rounded-xl text-xs cursor-pointer hover:border-[#2f323e] transition">
-                    <input
-                      type="checkbox"
-                      checked={watermarkConfig.detectAvatarBadges}
-                      onChange={(e) => {
-                        const val = e.target.checked;
-                        setWatermarkConfig((p) => ({ ...p, detectAvatarBadges: val }));
-                        handleSaveWatermarkConfig({ detectAvatarBadges: val });
-                      }}
-                      className="w-4 h-4 accent-[#FF5722] rounded cursor-pointer"
-                    />
-                    <span className="text-neutral-300 font-medium">
-                      Detectar Avatares Circulares & Selos de Perfil de Concorrentes nas fotos
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-white text-sm">
+                      📸 Substituir por Foto Limpa HD Oficial
                     </span>
-                  </label>
-
-                  <label className="flex items-center gap-3 p-3 bg-[#18191d] border border-[#252730] rounded-xl text-xs cursor-pointer hover:border-[#2f323e] transition">
-                    <input
-                      type="checkbox"
-                      checked={watermarkConfig.detectVerifiedCheckmark}
-                      onChange={(e) => {
-                        const val = e.target.checked;
-                        setWatermarkConfig((p) => ({ ...p, detectVerifiedCheckmark: val }));
-                        handleSaveWatermarkConfig({ detectVerifiedCheckmark: val });
-                      }}
-                      className="w-4 h-4 accent-[#FF5722] rounded cursor-pointer"
-                    />
-                    <span className="text-neutral-300 font-medium">
-                      Detectar Selo Azul de Verificado e Ícones de Redes Sociais
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#FF5722]/20 text-[#FF5722] border border-[#FF5722]/30">
+                      ATIVO PERMANENTE
                     </span>
-                  </label>
+                  </div>
+                  <p className="text-xs text-neutral-300 leading-relaxed">
+                    Busca automaticamente a foto original sem marca d'água direto na página do produto do marketplace (Mercado Livre, Shopee, Amazon, AliExpress, Magalu), substituindo a mídia antes do disparo.
+                  </p>
                 </div>
               </div>
+            </div>
 
-              {/* Right: Known Usernames/Handles */}
-              <div className="space-y-4">
-                <label className="text-xs font-extrabold text-white uppercase tracking-wider block">
-                  Lista de Handles / Usernames de Concorrentes
-                </label>
+            {/* GRUPOS DE ATUAÇÃO - COMPACTO NA MESMA ABA */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-[#18191d] border border-[#262832] space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#23252d]">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <Users2 className="w-4 h-4 text-[#FF5722]" />
+                    <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
+                      Grupos de Atuação do Filtro
+                    </h3>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                        watermarkConfig.allGroupsActive
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          : (watermarkConfig.appliedGroups || []).length > 0
+                          ? 'bg-[#FF5722]/20 text-[#FF5722] border-[#FF5722]/30'
+                          : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                      }`}
+                    >
+                      {watermarkConfig.allGroupsActive
+                        ? 'Todos os Grupos'
+                        : (watermarkConfig.appliedGroups || []).length > 0
+                        ? `${watermarkConfig.appliedGroups?.length || 0} selecionado(s)`
+                        : 'Nenhum grupo selecionado'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400">
+                    O filtro de foto limpa HD vai atuar e se manter ativo <strong>somente</strong> nos grupos adicionados abaixo.
+                  </p>
+                </div>
 
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newHandleInput}
-                    onChange={(e) => setNewHandleInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleAddUsername()}
-                    placeholder="Ex: @gustavohoffmannofc ou nome_canal"
-                    className="flex-1 px-3.5 py-2.5 bg-[#18191d] border border-[#272930] rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF5722]"
-                  />
+                <div className="flex items-center gap-2 shrink-0">
                   <button
-                    onClick={handleAddUsername}
-                    className="px-4 py-2.5 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                    type="button"
+                    onClick={() => handleToggleAllGroupsActive(false)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                      !watermarkConfig.allGroupsActive
+                        ? 'bg-[#FF5722] text-white border-[#FF5722]'
+                        : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
+                    }`}
                   >
-                    <Plus className="w-4 h-4" />
-                    <span>Adicionar</span>
+                    Grupos Específicos
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleAllGroupsActive(true)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                      watermarkConfig.allGroupsActive
+                        ? 'bg-[#FF5722] text-white border-[#FF5722]'
+                        : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
+                    }`}
+                  >
+                    Todos os Grupos
                   </button>
                 </div>
+              </div>
 
-                <div className="p-3 bg-[#18191d] border border-[#252730] rounded-xl space-y-2 max-h-[220px] overflow-y-auto">
-                  {(watermarkConfig.knownUsernames || []).length === 0 ? (
-                    <span className="text-xs text-neutral-500 italic block p-2 text-center">
-                      Nenhum username adicionado. O modelo usará a detecção visual genérica de IA.
-                    </span>
-                  ) : (
-                    (watermarkConfig.knownUsernames || []).map((handle, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between px-3 py-2 bg-[#121214] border border-[#22242a] rounded-lg text-xs"
+              {!watermarkConfig.allGroupsActive && (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    {/* Seletor dropdown de grupos/canais disponíveis */}
+                    {allAvailableGroups.length > 0 && (
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            handleAddGroupWatermark(e.target.value);
+                          }
+                        }}
+                        className="px-3 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white focus:outline-none focus:border-[#FF5722] cursor-pointer"
                       >
-                        <span className="font-mono text-amber-400 font-bold">{handle}</span>
-                        <button
-                          onClick={() => handleRemoveUsername(handle)}
-                          className="text-neutral-500 hover:text-red-400 transition cursor-pointer p-1"
-                          title="Remover username"
+                        <option value="">+ Selecionar grupo/canal conectado...</option>
+                        {allAvailableGroups
+                          .filter((g) => !(watermarkConfig.appliedGroups || []).includes(g.name))
+                          .map((g) => (
+                            <option key={g.id} value={g.name}>
+                              [{g.type}] {g.name}
+                            </option>
+                          ))}
+                      </select>
+                    )}
+
+                    {/* Campo de texto livre para adicionar qualquer grupo por nome */}
+                    <div className="flex-1 flex gap-2">
+                      <input
+                        type="text"
+                        value={customGroupInput}
+                        onChange={(e) => setCustomGroupInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddCustomGroup()}
+                        placeholder="Ou digite o nome do grupo para adicionar..."
+                        className="flex-1 px-3.5 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF5722]"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomGroup}
+                        className="px-3.5 py-2 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Adicionar</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Lista de Grupos Ativos (Tags/Chips com X para remover) */}
+                  <div className="p-3 bg-[#121316] border border-[#22242a] rounded-xl min-h-[56px] flex flex-wrap gap-2 items-center">
+                    {(watermarkConfig.appliedGroups || []).length === 0 ? (
+                      <span className="text-xs text-neutral-500 italic p-1">
+                        Nenhum grupo selecionado. Selecione no dropdown acima ou digite para adicionar.
+                      </span>
+                    ) : (
+                      (watermarkConfig.appliedGroups || []).map((grpName) => (
+                        <span
+                          key={grpName}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1e2027] border border-[#FF5722]/40 text-white text-xs font-medium shadow-xs"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))
+                          <Users2 className="w-3 h-3 text-[#FF5722]" />
+                          <span className="font-semibold">{grpName}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveGroupWatermark(grpName)}
+                            className="ml-1 text-neutral-400 hover:text-red-400 transition cursor-pointer p-0.5 rounded"
+                            title="Remover grupo"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  {(watermarkConfig.appliedGroups || []).length > 0 && (
+                    <div className="flex items-center justify-between text-[11px] text-neutral-400 px-1">
+                      <span>
+                        🛡️ O filtro atuará exclusivamente nos <strong>{watermarkConfig.appliedGroups?.length || 0}</strong> grupo(s) selecionado(s) acima.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleClearAllGroups}
+                        className="text-neutral-500 hover:text-red-400 transition cursor-pointer underline text-[11px]"
+                      >
+                        Desmarcar todos
+                      </button>
+                    </div>
                   )}
                 </div>
-
-                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs flex items-start gap-2.5">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <div className="text-[11px] leading-relaxed">
-                    <strong>Exemplo da Imagem do Concorrente:</strong> Perfis como <code className="font-mono bg-black/40 px-1 py-0.5 rounded text-amber-200">@gustavohoffmannofc</code> com foto circular no canto da oferta são identificados automaticamente.
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
           </div>
+        </div>
+      )}
 
-          {/* Tester Card / Image Inspector */}
-          <div className="p-6 sm:p-8 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-5">
-            <div className="pb-3 border-b border-[#22242a] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Scan className="w-5 h-5 text-[#FF5722]" />
-                <h3 className="text-base font-extrabold text-white">
-                  Inspetor da Visão IA &bull; Teste de Foto do Concorrente
-                </h3>
+      {/* TAB 4: FILTRO DE CHAT */}
+      {activeTab === 'chat_filter' && (
+        <div className="space-y-6 animate-in fade-in">
+          {/* Header Card */}
+          <div className="p-6 sm:p-8 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#22242a]">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#FF5722] to-amber-500 flex items-center justify-center text-white shadow-lg shadow-[#FF5722]/20">
+                    <Scissors className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-extrabold text-white">
+                      Filtro de Chat
+                    </h2>
+                    <p className="text-xs text-neutral-400">
+                      Exclui chamadas promocionais, frases e linhas indesejadas de mensagens nos grupos selecionados.
+                    </p>
+                  </div>
+                </div>
               </div>
-              <span className="text-[11px] text-neutral-400">
-                Envie uma imagem para ver a análise da IA em tempo real.
-              </span>
+
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-bold text-neutral-300">Status do Filtro:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextVal = !chatFilterConfig.enabled;
+                    setChatFilterConfig((p) => ({ ...p, enabled: nextVal }));
+                    handleSaveChatFilterConfig({ enabled: nextVal });
+                  }}
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
+                    chatFilterConfig.enabled ? 'bg-[#FF5722]' : 'bg-neutral-800'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                      chatFilterConfig.enabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Left: Upload area */}
-              <div className="space-y-3 flex flex-col justify-between">
-                <label className="border-2 border-dashed border-[#2d303d] hover:border-[#FF5722] rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition bg-[#18191d]/50 hover:bg-[#18191d]">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileUploadAndAnalyze}
-                    className="hidden"
-                  />
-                  <Upload className="w-8 h-8 text-[#FF5722] mb-2" />
-                  <span className="text-xs font-bold text-white">Clique para selecionar uma imagem de produto</span>
-                  <span className="text-[11px] text-neutral-500 mt-1">PNG, JPG ou WEBP até 10MB</span>
-                </label>
+            {chatFilterSaveNotice && (
+              <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold flex items-center gap-2 animate-in fade-in">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>Configurações do Filtro de Chat salvas com sucesso!</span>
+              </div>
+            )}
 
-                {testImagePreview && (
-                  <div className="relative rounded-2xl overflow-hidden border border-[#292b36] max-h-[280px] bg-black/40 flex items-center justify-center">
-                    <img
-                      src={testImagePreview}
-                      alt="Preview da oferta"
-                      className="max-h-[260px] object-contain rounded-xl"
-                    />
+            {/* AÇÃO PRINCIPAL */}
+            <div className="p-4 sm:p-5 rounded-2xl border border-[#FF5722] bg-[#1e1f24] text-xs shadow-md space-y-2">
+              <div className="flex items-start gap-3.5">
+                <div className="w-6 h-6 rounded-full bg-[#FF5722] flex items-center justify-center text-white shrink-0 mt-0.5 shadow-sm">
+                  <Scissors className="w-3.5 h-3.5" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-white text-sm">
+                      ✂️ Excluir Linhas em *exemplo* (com * no Início e no Final)
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#FF5722]/20 text-[#FF5722] border border-[#FF5722]/30">
+                      ATIVO PERMANENTE
+                    </span>
                   </div>
-                )}
+                  <p className="text-xs text-neutral-300 leading-relaxed">
+                    Apaga automaticamente toda linha ou chamada do concorrente que tiver <code className="font-mono bg-black/40 px-1.5 py-0.5 rounded text-amber-300 font-bold">*</code> no início e no final (ex: <code className="font-mono bg-black/40 px-1 py-0.5 rounded text-amber-300">*exemplo*</code>, <code className="font-mono bg-black/40 px-1 py-0.5 rounded text-amber-300">*SÓ R$11,66 CADA 😱*</code>, <code className="font-mono bg-black/40 px-1 py-0.5 rounded text-amber-300">*CORRE*</code>), preservando o nome real do produto, preço e seu link de afiliado oficial.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* GRUPOS DE ATUAÇÃO - COMPACTO NA MESMA ABA */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-[#18191d] border border-[#262832] space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#23252d]">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <Users2 className="w-4 h-4 text-[#FF5722]" />
+                    <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
+                      Grupos de Atuação do Filtro
+                    </h3>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                        chatFilterConfig.allGroupsActive
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                          : (chatFilterConfig.appliedGroups || []).length > 0
+                          ? 'bg-[#FF5722]/20 text-[#FF5722] border-[#FF5722]/30'
+                          : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                      }`}
+                    >
+                      {chatFilterConfig.allGroupsActive
+                        ? 'Todos os Grupos'
+                        : (chatFilterConfig.appliedGroups || []).length > 0
+                        ? `${chatFilterConfig.appliedGroups?.length || 0} selecionado(s)`
+                        : 'Nenhum grupo selecionado'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400">
+                    O filtro de chat vai atuar e se manter ativo <strong>somente</strong> nos grupos adicionados abaixo.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleAllChatGroupsActive(false)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                      !chatFilterConfig.allGroupsActive
+                        ? 'bg-[#FF5722] text-white border-[#FF5722]'
+                        : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
+                    }`}
+                  >
+                    Grupos Específicos
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleAllChatGroupsActive(true)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                      chatFilterConfig.allGroupsActive
+                        ? 'bg-[#FF5722] text-white border-[#FF5722]'
+                        : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
+                    }`}
+                  >
+                    Todos os Grupos
+                  </button>
+                </div>
               </div>
 
-              {/* Right: Analysis Results */}
-              <div className="space-y-4 flex flex-col justify-between">
-                <div>
-                  <h4 className="text-xs font-extrabold text-white uppercase tracking-wider mb-3">
-                    Resultado do Escaneamento Visão IA
-                  </h4>
+              {!chatFilterConfig.allGroupsActive && (
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    {/* Seletor dropdown de grupos/canais disponíveis */}
+                    {allAvailableGroups.length > 0 && (
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            handleAddGroupChatFilter(e.target.value);
+                          }
+                        }}
+                        className="px-3 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white focus:outline-none focus:border-[#FF5722] cursor-pointer"
+                      >
+                        <option value="">+ Selecionar grupo/canal conectado...</option>
+                        {allAvailableGroups
+                          .filter((g) => !(chatFilterConfig.appliedGroups || []).includes(g.name))
+                          .map((g) => (
+                            <option key={g.id} value={g.name}>
+                              [{g.type}] {g.name}
+                            </option>
+                          ))}
+                      </select>
+                    )}
 
-                  {isAnalyzingImage ? (
-                    <div className="p-8 rounded-2xl bg-[#18191d] border border-[#252730] text-center flex flex-col items-center justify-center min-h-[200px]">
-                      <Loader2 className="w-8 h-8 animate-spin text-[#FF5722] mb-3" />
-                      <span className="text-xs font-bold text-white">Analisando imagem com o Gemini Flash Vision...</span>
-                      <span className="text-[11px] text-neutral-400 mt-1">Buscando marcas d'água, avatares e usernames</span>
+                    {/* Campo de texto livre para adicionar qualquer grupo por nome */}
+                    <div className="flex-1 flex gap-2">
+                      <input
+                        type="text"
+                        value={customChatGroupInput}
+                        onChange={(e) => setCustomChatGroupInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddCustomChatGroup()}
+                        placeholder="Ou digite o nome do grupo para adicionar..."
+                        className="flex-1 px-3.5 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF5722]"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomChatGroup}
+                        className="px-3.5 py-2 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Adicionar</span>
+                      </button>
                     </div>
-                  ) : analysisResult ? (
-                    <div className={`p-5 rounded-2xl border space-y-3 ${
-                      analysisResult.hasWatermark
-                        ? 'bg-red-500/10 border-red-500/30 text-red-200'
-                        : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
-                    }`}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          {analysisResult.hasWatermark ? (
-                            <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
-                          ) : (
-                            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                          )}
-                          <span className="font-extrabold text-sm text-white">
-                            {analysisResult.hasWatermark
-                              ? "MARCA D'ÁGUA OU LOGO DETECTADA!"
-                              : "FOTO LIMPA - NENHUMA MARCA DETECTADA"}
-                          </span>
-                        </div>
-                        {analysisResult.confidence !== undefined && (
-                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-black/40 text-neutral-300 border border-white/10">
-                            Confiança: {Math.round(analysisResult.confidence * 100)}%
-                          </span>
-                        )}
-                      </div>
+                  </div>
 
-                      {analysisResult.reason && (
-                        <p className="text-xs text-neutral-300 leading-relaxed border-t border-white/10 pt-2">
-                          {analysisResult.reason}
-                        </p>
-                      )}
+                  {/* Lista de Grupos Ativos (Tags/Chips com X para remover) */}
+                  <div className="p-3 bg-[#121316] border border-[#22242a] rounded-xl min-h-[56px] flex flex-wrap gap-2 items-center">
+                    {(chatFilterConfig.appliedGroups || []).length === 0 ? (
+                      <span className="text-xs text-neutral-500 italic p-1">
+                        Nenhum grupo selecionado. Selecione no dropdown acima ou digite para adicionar.
+                      </span>
+                    ) : (
+                      (chatFilterConfig.appliedGroups || []).map((grpName) => (
+                        <span
+                          key={grpName}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1e2027] border border-[#FF5722]/40 text-white text-xs font-medium shadow-xs"
+                        >
+                          <Users2 className="w-3 h-3 text-[#FF5722]" />
+                          <span className="font-semibold">{grpName}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveGroupChatFilter(grpName)}
+                            className="ml-1 text-neutral-400 hover:text-red-400 transition cursor-pointer p-0.5 rounded"
+                            title="Remover grupo"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
 
-                      <div className="pt-2 grid grid-cols-2 gap-2 text-[11px]">
-                        <div className="p-2.5 rounded-xl bg-black/30 border border-white/5 space-y-1">
-                          <span className="text-neutral-400 block text-[10px]">Usernames Encontrados:</span>
-                          <span className="font-mono text-white font-bold">
-                            {(analysisResult.detectedHandles || []).length > 0
-                              ? analysisResult.detectedHandles?.join(', ')
-                              : 'Nenhum'}
-                          </span>
-                        </div>
-
-                        <div className="p-2.5 rounded-xl bg-black/30 border border-white/5 space-y-1">
-                          <span className="text-neutral-400 block text-[10px]">Selo de Avatar Circular:</span>
-                          <span className="font-mono text-white font-bold">
-                            {analysisResult.hasAvatarBadge ? 'SIM (Detectado)' : 'NÃO'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="p-8 border border-dashed border-[#262830] rounded-2xl text-center text-neutral-500 text-xs flex flex-col items-center justify-center min-h-[200px]">
-                      <Eye className="w-8 h-8 text-neutral-600 mb-2" />
-                      <span>Selecione uma imagem de produto acima para testar o filtro.</span>
+                  {(chatFilterConfig.appliedGroups || []).length > 0 && (
+                    <div className="flex items-center justify-between text-[11px] text-neutral-400 px-1">
+                      <span>
+                        🛡️ O filtro de chat atuará exclusivamente nos <strong>{chatFilterConfig.appliedGroups?.length || 0}</strong> grupo(s) selecionado(s) acima.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleClearAllChatGroups}
+                        className="text-neutral-500 hover:text-red-400 transition cursor-pointer underline text-[11px]"
+                      >
+                        Desmarcar todos
+                      </button>
                     </div>
                   )}
                 </div>
+              )}
+            </div>
+
+            {/* LISTA DE LINHAS / FRASES PARA EXCLUIR */}
+            <div className="p-4 sm:p-5 rounded-2xl bg-[#18191d] border border-[#262832] space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#23252d]">
+                <div>
+                  <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
+                    Linhas & Chamadas para Exclusão
+                  </h3>
+                  <p className="text-[11px] text-neutral-400 mt-0.5">
+                    Cadastre linhas exatas, frases ou padrões que o robô deve remover do texto antes de replicar a oferta.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <label className="flex items-center gap-2 text-xs text-neutral-300 font-medium cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={chatFilterConfig.removeAsteriskHeaders !== false}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setChatFilterConfig((p) => ({ ...p, removeAsteriskHeaders: val }));
+                        handleSaveChatFilterConfig({ removeAsteriskHeaders: val });
+                      }}
+                      className="w-4 h-4 accent-[#FF5722] rounded cursor-pointer"
+                    />
+                    <span>Apagar toda linha em <strong className="text-amber-300 font-mono">*exemplo*</strong></span>
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-neutral-300 font-medium cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={chatFilterConfig.removeUnitPriceHooks}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setChatFilterConfig((p) => ({ ...p, removeUnitPriceHooks: val }));
+                        handleSaveChatFilterConfig({ removeUnitPriceHooks: val });
+                      }}
+                      className="w-4 h-4 accent-[#FF5722] rounded cursor-pointer"
+                    />
+                    <span>Auto-detectar preço unitário (*SÓ R$... CADA*)</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Input para adicionar nova linha/frase */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newExcludedPhraseInput}
+                  onChange={(e) => setNewExcludedPhraseInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddExcludedPhrase()}
+                  placeholder="Ex: *exemplo*, *SÓ R$11,66 CADA 😱* ou qualquer frase/linha indesejada"
+                  className="flex-1 px-3.5 py-2.5 bg-[#121316] border border-[#272930] rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF5722]"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddExcludedPhrase}
+                  className="px-4 py-2.5 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Adicionar Linha</span>
+                </button>
+              </div>
+
+              {/* Lista de frases/linhas cadastradas */}
+              <div className="p-3 bg-[#121316] border border-[#22242a] rounded-xl min-h-[60px] flex flex-wrap gap-2 items-center">
+                {(chatFilterConfig.excludedPhrases || []).length === 0 ? (
+                  <span className="text-xs text-neutral-500 italic p-1">
+                    Nenhuma frase cadastrada. Digite no campo acima para adicionar frases a serem excluídas.
+                  </span>
+                ) : (
+                  (chatFilterConfig.excludedPhrases || []).map((phrase, idx) => (
+                    <span
+                      key={idx}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1e2027] border border-amber-500/30 text-amber-300 text-xs font-mono shadow-xs"
+                    >
+                      <Scissors className="w-3 h-3 text-[#FF5722]" />
+                      <span className="font-semibold">{phrase}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveExcludedPhrase(phrase)}
+                        className="ml-1 text-neutral-400 hover:text-red-400 transition cursor-pointer p-0.5 rounded"
+                        title="Remover frase"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </span>
+                  ))
+                )}
               </div>
             </div>
           </div>

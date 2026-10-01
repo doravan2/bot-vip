@@ -1,6 +1,5 @@
 export type NavigationTab =
   | 'marketplaces'
-  | 'produtos'
   | 'grupos'
   | 'canais'
   | 'conexoes'

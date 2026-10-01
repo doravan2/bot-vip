@@ -15,10 +15,6 @@ const TAB_TITLES: Record<NavigationTab, { title: string; subtitle: string }> = {
     title: 'Marketplaces & Afiliados',
     subtitle: 'Conecte suas contas do Mercado Livre, Shopee, Amazon e outras plataformas',
   },
-  produtos: {
-    title: 'Produtos & Varredura',
-    subtitle: 'Selecione e envie ofertas capturadas dos grupos fonte durante a inatividade',
-  },
   grupos: {
     title: 'Gestão de Grupos',
     subtitle: 'Sincronização em massa de grupos do WhatsApp e regras anti-lotação',

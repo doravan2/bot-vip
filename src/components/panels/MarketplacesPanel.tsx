@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ExternalLink,
   Shield,
@@ -14,6 +14,9 @@ import {
   Lock,
   ShieldCheck,
   Power,
+  Download,
+  Upload,
+  FileJson,
 } from 'lucide-react';
 
 interface MercadoLivreConfig {
@@ -310,8 +313,94 @@ export const MarketplacesPanel: React.FC = () => {
     }
   };
 
+  // JSON Export / Download & Import handlers
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [jsonExportSuccess, setJsonExportSuccess] = useState(false);
+  const [jsonImportSuccess, setJsonImportSuccess] = useState(false);
+  const [jsonError, setJsonError] = useState<string | null>(null);
+
+  const handleDownloadJsonConfig = () => {
+    try {
+      const exportPayload = {
+        app: 'AutoBotPromos',
+        description: 'Backup de Configurações dos Marketplaces & Afiliados',
+        version: '2.0',
+        exportedAt: new Date().toISOString(),
+        config,
+      };
+
+      const jsonStr = JSON.stringify(exportPayload, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `marketplaces_config_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setJsonExportSuccess(true);
+      setTimeout(() => setJsonExportSuccess(false), 3500);
+    } catch (err: any) {
+      console.error('Erro ao exportar JSON:', err);
+      setJsonError('Erro ao gerar download do arquivo JSON.');
+      setTimeout(() => setJsonError(null), 3500);
+    }
+  };
+
+  const handleImportJsonFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const parsed = JSON.parse(text);
+        const importedData = parsed.config || parsed;
+
+        if (!importedData || typeof importedData !== 'object') {
+          throw new Error('Formato do arquivo JSON inválido.');
+        }
+
+        setIsLoading(true);
+        // Save imported configuration to backend
+        const res = await fetch('/api/marketplaces/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(importedData),
+        });
+
+        if (res.ok) {
+          await fetchConfig();
+          setJsonImportSuccess(true);
+          setTimeout(() => setJsonImportSuccess(false), 4000);
+        } else {
+          throw new Error('Falha ao salvar configurações importadas no servidor.');
+        }
+      } catch (err: any) {
+        setJsonError(err.message || 'Arquivo JSON inválido ou corrompido.');
+        setTimeout(() => setJsonError(null), 4000);
+      } finally {
+        setIsLoading(false);
+        if (event.target) event.target.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+
   return (
     <div className="space-y-6 w-full max-w-7xl mx-auto pb-16 text-neutral-200">
+      {/* Hidden File Input for JSON import */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleImportJsonFile}
+        accept=".json,application/json"
+        className="hidden"
+      />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -323,7 +412,53 @@ export const MarketplacesPanel: React.FC = () => {
             Ative ou desative marketplaces instantaneamente e configure suas credenciais oficiais de comissão.
           </p>
         </div>
+
+        {/* JSON Backup & Restore Actions */}
+        <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleDownloadJsonConfig}
+            className="px-3.5 py-2 rounded-xl bg-[#1e1f26] hover:bg-[#282a34] text-white text-xs font-bold border border-[#2c2f3a] hover:border-[#FF5722] transition cursor-pointer flex items-center gap-2 shadow-xs group"
+            title="Baixar todas as credenciais e tags em um arquivo JSON"
+          >
+            <Download className="w-4 h-4 text-[#FF5722] group-hover:scale-110 transition-transform" />
+            <span>Baixar Backup (JSON)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isLoading}
+            className="px-3.5 py-2 rounded-xl bg-[#1e1f26] hover:bg-[#282a34] text-neutral-300 hover:text-white text-xs font-bold border border-[#2c2f3a] hover:border-emerald-500 transition cursor-pointer flex items-center gap-2 shadow-xs group disabled:opacity-50"
+            title="Importar configurações de um arquivo JSON salvo anteriormente"
+          >
+            <Upload className="w-4 h-4 text-emerald-400 group-hover:scale-110 transition-transform" />
+            <span>Restaurar JSON</span>
+          </button>
+        </div>
       </div>
+
+      {/* JSON Feedback Banners */}
+      {jsonExportSuccess && (
+        <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center gap-2 animate-in fade-in duration-200">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>✅ Download concluído! Arquivo JSON salvo com sucesso. Você pode restaurá-lo sempre que atualizar o app.</span>
+        </div>
+      )}
+
+      {jsonImportSuccess && (
+        <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center gap-2 animate-in fade-in duration-200">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>✅ Configurações restauradas com sucesso do arquivo JSON! Todas as tags e chaves estão ativas.</span>
+        </div>
+      )}
+
+      {jsonError && (
+        <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-semibold flex items-center gap-2 animate-in fade-in duration-200">
+          <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+          <span>{jsonError}</span>
+        </div>
+      )}
 
       {/* Grid of 6 Marketplaces */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">

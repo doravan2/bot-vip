@@ -274,10 +274,13 @@ export async function connectTelegramBot(botToken: string, defaultChatId?: strin
 
   console.log(`[TelegramService] 🚀 Bot Telegram @${validation.botInfo.username} conectado com sucesso!`);
 
+  // Start message listening polling immediately
+  startTelegramPolling().catch((e) => console.warn('[TelegramService] Erro ao iniciar polling:', e));
+
   return {
     success: true,
     config: updated,
-    message: `Bot @${validation.botInfo.username} (${validation.botInfo.first_name}) conectado com sucesso!`,
+    message: `Bot @${validation.botInfo.username} (${validation.botInfo.first_name}) conectado com sucesso! Escuta de mensagens iniciada.`,
   };
 }
 
@@ -305,6 +308,10 @@ export function disconnectTelegramBot(botId?: string): TelegramConfig {
     lastTested: new Date().toLocaleTimeString('pt-BR'),
   });
 
+  if (!nextActive) {
+    stopTelegramPolling();
+  }
+
   console.log(`[TelegramService] 🛑 Bot Telegram ${botId || 'todos'} desconectado.`);
   return updated;
 }
@@ -328,6 +335,9 @@ export function setActiveTelegramBot(botId: string): TelegramConfig {
   });
 
   console.log(`[TelegramService] 🔄 Bot ativo alterado para @${bot.botInfo.username}`);
+  // Restart polling with new active token
+  stopTelegramPolling();
+  startTelegramPolling().catch(() => {});
   return updated;
 }
 
@@ -554,4 +564,196 @@ export async function sendTelegramMessage(
   } catch (err: any) {
     return { success: false, error: err.message || 'Falha de comunicação com a API do Telegram.' };
   }
+}
+
+// ============================================================================
+// TELEGRAM INCOMING LISTENER & POLLING ENGINE (Telegram -> WhatsApp)
+// ============================================================================
+
+export type TelegramIncomingHandler = (params: {
+  rawText: string;
+  imageBuffer?: Buffer | null;
+  chatId: string;
+  chatTitle: string;
+  chatUsername?: string;
+  messageId?: number;
+}) => Promise<{ success: boolean; ruleMatched?: string; targetsSent?: string[]; error?: string; message?: string }>;
+
+let telegramIncomingHandler: TelegramIncomingHandler | null = null;
+let isPollingActive = false;
+let pollingAbortController: AbortController | null = null;
+let lastUpdateId = 0;
+let lastPollingHeartbeat = '';
+
+export function registerTelegramIncomingHandler(handler: TelegramIncomingHandler): void {
+  telegramIncomingHandler = handler;
+  console.log('[TelegramService] 🔗 Manipulador de mensagens Telegram registrado com sucesso!');
+}
+
+export function isTelegramPollingRunning(): { active: boolean; lastHeartbeat: string; lastUpdateId: number } {
+  return {
+    active: isPollingActive,
+    lastHeartbeat: lastPollingHeartbeat,
+    lastUpdateId,
+  };
+}
+
+/**
+ * Downloads a photo or file from Telegram by file_id
+ */
+export async function downloadTelegramFile(botToken: string, fileId: string): Promise<Buffer | null> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`);
+    const data: any = await res.json();
+    if (data.ok && data.result?.file_path) {
+      const fileUrl = `https://api.telegram.org/file/bot${botToken}/${data.result.file_path}`;
+      const fileRes = await fetch(fileUrl, {
+        headers: { 'User-Agent': 'BOT-VIP-OFERTAS/1.0' },
+      });
+      if (fileRes.ok) {
+        const ab = await fileRes.arrayBuffer();
+        return Buffer.from(ab);
+      }
+    }
+  } catch (err) {
+    console.warn('[TelegramService] Falha ao baixar foto do Telegram:', err);
+  }
+  return null;
+}
+
+/**
+ * Processes an incoming Telegram update (from polling OR webhook)
+ */
+export async function processTelegramUpdate(update: any): Promise<{ success: boolean; handled?: boolean; result?: any }> {
+  if (!update) return { success: false, handled: false };
+
+  // Telegram sends either channel_post (for channels) or message (for groups/supergroups/chats)
+  const msg = update.channel_post || update.message || update.edited_channel_post || update.edited_message;
+  if (!msg) return { success: true, handled: false };
+
+  const chat = msg.chat;
+  if (!chat) return { success: true, handled: false };
+
+  const chatId = String(chat.id);
+  const chatTitle = chat.title || chat.username || String(chat.id);
+  const chatUsername = chat.username;
+  const rawText = msg.text || msg.caption || '';
+  const messageId = msg.message_id;
+
+  // If message has no text and no photo, ignore
+  if (!rawText && !msg.photo && !msg.document) {
+    return { success: true, handled: false };
+  }
+
+  console.log(`[TelegramService] 📩 Nova mensagem recebida no Telegram de "${chatTitle}" (${chatId}): "${rawText.slice(0, 60)}..."`);
+
+  // Download photo if attached (Telegram sends multiple sizes, last one is highest resolution)
+  let imageBuffer: Buffer | null = null;
+  if (Array.isArray(msg.photo) && msg.photo.length > 0) {
+    const largest = msg.photo[msg.photo.length - 1];
+    if (largest?.file_id) {
+      const config = getTelegramConfig();
+      if (config.botToken) {
+        imageBuffer = await downloadTelegramFile(config.botToken, largest.file_id);
+        if (imageBuffer) {
+          console.log(`[TelegramService] 📸 Foto do Telegram baixada (${imageBuffer.length} bytes)!`);
+        }
+      }
+    }
+  }
+
+  if (telegramIncomingHandler) {
+    const result = await telegramIncomingHandler({
+      rawText,
+      imageBuffer,
+      chatId,
+      chatTitle,
+      chatUsername,
+      messageId,
+    });
+    return { success: true, handled: true, result };
+  } else {
+    console.warn('[TelegramService] Mensagem recebida, mas nenhum manipulador de encaminhamento registrado.');
+    return { success: false, handled: false };
+  }
+}
+
+/**
+ * Starts continuous Long-Polling for Telegram channel & group updates
+ */
+export async function startTelegramPolling(): Promise<void> {
+  if (isPollingActive) {
+    return;
+  }
+
+  const config = getTelegramConfig();
+  if (config.status !== 'connected' || !config.botToken) {
+    console.log('[TelegramService] ℹ️ Bot Telegram não está conectado. Escuta de mensagens inativa.');
+    return;
+  }
+
+  isPollingActive = true;
+  pollingAbortController = new AbortController();
+  lastPollingHeartbeat = new Date().toLocaleTimeString('pt-BR');
+
+  console.log(`[TelegramService] 🎧 Escuta de mensagens do Telegram INICIADA! Monitorando grupos e canais via Long-Polling...`);
+
+  // Run async polling loop
+  (async () => {
+    while (isPollingActive) {
+      try {
+        const currentConf = getTelegramConfig();
+        if (currentConf.status !== 'connected' || !currentConf.botToken) {
+          isPollingActive = false;
+          break;
+        }
+
+        lastPollingHeartbeat = new Date().toLocaleTimeString('pt-BR');
+
+        const offsetParam = lastUpdateId ? `?offset=${lastUpdateId + 1}&timeout=20` : `?timeout=20`;
+        const url = `https://api.telegram.org/bot${currentConf.botToken}/getUpdates${offsetParam}&allowed_updates=["message","channel_post","edited_message","edited_channel_post"]`;
+
+        const res = await fetch(url, {
+          signal: pollingAbortController?.signal,
+          headers: { 'User-Agent': 'BOT-VIP-OFERTAS/1.0' },
+        });
+
+        if (!res.ok) {
+          await new Promise((r) => setTimeout(r, 4000));
+          continue;
+        }
+
+        const data: any = await res.json();
+        if (data.ok && Array.isArray(data.result)) {
+          for (const update of data.result) {
+            lastUpdateId = Math.max(lastUpdateId, update.update_id);
+            try {
+              await processTelegramUpdate(update);
+            } catch (pErr) {
+              console.warn('[TelegramService] Erro ao processar update do Telegram:', pErr);
+            }
+          }
+        }
+      } catch (err: any) {
+        if (err.name === 'AbortError') break;
+        // Wait before retrying on transient network disconnects
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
+    console.log('[TelegramService] ⏹️ Escuta de mensagens do Telegram finalizada.');
+  })();
+}
+
+/**
+ * Stops continuous Long-Polling for Telegram
+ */
+export function stopTelegramPolling(): void {
+  isPollingActive = false;
+  if (pollingAbortController) {
+    try {
+      pollingAbortController.abort();
+    } catch {}
+    pollingAbortController = null;
+  }
+  console.log('[TelegramService] 🛑 Polling do Telegram pausado.');
 }

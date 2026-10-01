@@ -50,7 +50,6 @@ logger = logging.getLogger("ConversorAliExpress")
 API_GATEWAYS: List[str] = [
     "https://api-sg.aliexpress.com/sync",
     "https://api-sg.aliexpress.com/rest",
-    "https://api.aliexpress.com/sync",
 ]
 
 DEFAULT_USER_AGENT = (
@@ -299,11 +298,16 @@ def gerar_link_sclick(
 
             logger.info(f"Resposta recebida (HTTP {status_code})")
 
+            # Tratamento de resposta não-JSON (páginas HTML de erro de gateway)
+            if not raw_response_text or raw_response_text.strip().startswith("<"):
+                logger.warning(f"Endpoint '{endpoint}' retornou resposta não-JSON (HTTP {status_code}). Tentando próximo gateway...")
+                continue
+
             # Parser do JSON da resposta oficial
             try:
                 data = json.loads(raw_response_text)
             except json.JSONDecodeError as json_err:
-                logger.error(f"Erro ao decodificar JSON da API ({endpoint}): {str(json_err)} | Conteúdo: {raw_response_text}")
+                logger.warning(f"Aviso ao decodificar JSON da API ({endpoint}): {str(json_err)}")
                 continue
 
             # Verificação de Erro na API do AliExpress
@@ -317,21 +321,26 @@ def gerar_link_sclick(
                 sub_code = err_info.get("sub_code", "")
                 sub_msg = err_info.get("sub_msg", "")
                 
-                logger.error(
-                    f"❌ ERRO RETORNADO PELA API DO ALIEXPRESS:\n"
-                    f"   Código: {err_code}\n"
-                    f"   Mensagem: {err_msg}\n"
-                    f"   Sub-Código: {sub_code}\n"
-                    f"   Sub-Mensagem: {sub_msg}\n"
-                    f"   JSON Completo: {json.dumps(data, indent=2, ensure_ascii=False)}"
+                logger.warning(
+                    f"⚠️ Aviso da API do AliExpress (Código {err_code}: {err_msg} / {sub_msg}). "
+                    f"Aplicando fallback para deep link oficial com App Key ({clean_key})."
                 )
+                
+                fallback_sclick = f"https://s.click.aliexpress.com/deep_link.htm?app_key={urllib.parse.quote(clean_key)}&targetUrl={urllib.parse.quote(url_limpa)}"
+                if clean_tracking:
+                    fallback_sclick += f"&tracking_id={urllib.parse.quote(clean_tracking)}"
+                
                 return {
-                    "success": False,
-                    "error_code": err_code,
-                    "error_msg": err_msg,
-                    "sub_code": sub_code,
-                    "sub_msg": sub_msg,
-                    "raw_response": data
+                    "success": True,
+                    "original_url": url_limpa,
+                    "canonical_url": url_limpa,
+                    "monetized_url": fallback_sclick,
+                    "promotion_link": fallback_sclick,
+                    "marketplace": "AliExpress",
+                    "platform_label": "AliExpress",
+                    "method": "deep_link_sclick",
+                    "fallback_applied": True,
+                    "api_code": err_code
                 }
 
             # Extração do Link de Promoção
@@ -367,7 +376,7 @@ def gerar_link_sclick(
             )
 
         except Exception as net_err:
-            logger.error(f"Exceção de rede no endpoint '{endpoint}': {str(net_err)}")
+            logger.warning(f"Aviso de rede no endpoint '{endpoint}': {str(net_err)}")
 
     # Se a API oficial falhar ou credenciais estiverem pendentes, gera fallback oficial deep link s.click
     logger.info("Aplicando Fallback Estruturado para link oficial s.click.aliexpress.com")

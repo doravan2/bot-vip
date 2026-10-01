@@ -63,6 +63,22 @@ export const DEFAULT_USER_MELI_LINKS: Record<string, string> = {
 };
 
 /**
+ * Checks if a URL is an error page, 404, or non-product game/coin page
+ */
+export function isInvalidOrErrorUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return true;
+  const lower = url.toLowerCase().trim();
+  return (
+    lower.includes('/s/error') ||
+    lower.includes('/error/404') ||
+    lower.includes('coin-index') ||
+    lower.includes('/p/coin') ||
+    lower.includes('error.mercadolivre') ||
+    lower.includes('aliexpress.com/s/error')
+  );
+}
+
+/**
  * Detects if a URL belongs to a competitor group, channel, social link aggregator,
  * or redirect domain (e.g. linktr.ee, chat.whatsapp.com, t.me, grupos.*, beacons.ai).
  */
@@ -70,6 +86,11 @@ export function isCompetitorShareUrl(rawUrl: string, activeGroupLink?: string): 
   if (!rawUrl || typeof rawUrl !== 'string') return false;
   const trimmed = rawUrl.trim();
   if (!trimmed) return false;
+
+  // Never treat error 404 or game/coin pages as products
+  if (isInvalidOrErrorUrl(trimmed)) {
+    return true;
+  }
 
   const lower = trimmed.toLowerCase();
 
@@ -589,18 +610,29 @@ export function monetizeAliExpress(
 
   const effectiveUrl = resolvedUrlsCache.get(trimmed) || trimmed;
 
+  // Never monetize error 404 or coin game links
+  if (isInvalidOrErrorUrl(effectiveUrl) || isInvalidOrErrorUrl(trimmed)) {
+    return '';
+  }
+
   // 1. Extract pure AliExpress Item ID (e.g. 1005006283921000 or /item/1005006283921000.html)
   const itemMatch =
     effectiveUrl.match(/\/item\/(\d+)\.html/i) ||
     effectiveUrl.match(/\/item\/(\d+)/i) ||
     effectiveUrl.match(/item[_\-\/](\d+)/i) ||
-    effectiveUrl.match(/goodsId=(\d+)/i);
+    effectiveUrl.match(/goodsId=(\d+)/i) ||
+    trimmed.match(/\/item\/(\d+)\.html/i) ||
+    trimmed.match(/\/item\/(\d+)/i);
 
   let cleanProductUrl = effectiveUrl;
 
   if (itemMatch && itemMatch[1]) {
     cleanProductUrl = `https://pt.aliexpress.com/item/${itemMatch[1]}.html`;
   } else {
+    // If not a recognized product URL, don't generate deep links for error/search pages
+    if (isInvalidOrErrorUrl(effectiveUrl) || effectiveUrl.includes('/s/error') || effectiveUrl.includes('coin-index')) {
+      return '';
+    }
     // Strip competitor tracking parameters from other AliExpress pages
     try {
       const u = new URL(effectiveUrl);
@@ -630,6 +662,11 @@ export function monetizeAliExpress(
     } catch {
       cleanProductUrl = effectiveUrl.split('?')[0].split('#')[0];
     }
+  }
+
+  // Only wrap with s.click deep link if we have a valid product URL
+  if (!cleanProductUrl.includes('/item/') && !cleanProductUrl.includes('/i/') && !itemMatch) {
+    return cleanProductUrl;
   }
 
   const activeAppKey = appKey ? appKey.trim() : '';
@@ -1054,6 +1091,23 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
     return resolvedUrlsCache.get(trimmed)!;
   }
 
+  // Quick validation: must be a potential URL
+  let targetUrl = trimmed;
+  if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+    targetUrl = 'https://' + targetUrl;
+  }
+
+  try {
+    const parsed = new URL(targetUrl);
+    if (!parsed.hostname || !parsed.hostname.includes('.') || parsed.hostname.length < 4) {
+      resolvedUrlsCache.set(trimmed, trimmed);
+      return trimmed;
+    }
+  } catch {
+    resolvedUrlsCache.set(trimmed, trimmed);
+    return trimmed;
+  }
+
   const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined';
 
   // 1. Browser environment: call server-side headless resolver endpoint
@@ -1064,8 +1118,10 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
         const data = await resp.json();
         if (data.canonicalLongUrl || data.longUrl) {
           const finalUrl = (data.canonicalLongUrl || data.longUrl).trim();
-          resolvedUrlsCache.set(trimmed, finalUrl);
-          return finalUrl;
+          if (!isInvalidOrErrorUrl(finalUrl)) {
+            resolvedUrlsCache.set(trimmed, finalUrl);
+            return finalUrl;
+          }
         }
       }
     } catch {
@@ -1085,7 +1141,7 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
           if (!error && stdout) {
             try {
               const parsed = JSON.parse(stdout.trim());
-              if (parsed.canonicalLongUrl) {
+              if (parsed.success && parsed.canonicalLongUrl && !isInvalidOrErrorUrl(parsed.canonicalLongUrl)) {
                 return resolve(parsed.canonicalLongUrl);
               }
             } catch {}
@@ -1094,18 +1150,22 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
         });
       });
 
-      if (pythonResult) {
+      if (pythonResult && !isInvalidOrErrorUrl(pythonResult)) {
         resolvedUrlsCache.set(trimmed, pythonResult);
         console.log(`[AffiliateEngine/Python] 🎯 Link encurtado "${trimmed}" resolvido para URL longa canônica: "${pythonResult}"`);
         return pythonResult;
       }
-    } catch (pyErr) {
-      console.warn('[AffiliateEngine] Falha ao invocar Python headless resolver, tentando fallback Node:', pyErr);
+    } catch {
+      // Silently proceed to Node.js fetch fallback
     }
 
     // 3. Fallback: Node.js fetch with browser headers + DOM/regex parsing
     try {
-      const res = await fetch(trimmed, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+      const res = await fetch(targetUrl, {
+        signal: controller.signal,
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -1114,8 +1174,14 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
         },
         redirect: 'follow',
       });
+      clearTimeout(timeoutId);
 
       const finalUrl = res.url || trimmed;
+      if (isInvalidOrErrorUrl(finalUrl)) {
+        resolvedUrlsCache.set(trimmed, trimmed);
+        return trimmed;
+      }
+
       if (finalUrl.includes('/p/MLB') || finalUrl.includes('produto.mercadolivre.com.br/MLB')) {
         const clean = finalUrl.split('?')[0].split('#')[0];
         resolvedUrlsCache.set(trimmed, clean);
@@ -1152,12 +1218,15 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
       const cleanFinal = finalUrl.split('?')[0].split('#')[0];
       resolvedUrlsCache.set(trimmed, cleanFinal);
       return cleanFinal;
-    } catch (e) {
-      console.warn('[AffiliateEngine] Falha no fallback de resolução:', e);
+    } catch {
+      // Gracefully cache and return original URL when unresolvable/offline/invalid domain
+      resolvedUrlsCache.set(trimmed, trimmed);
+      return trimmed;
     }
   }
 
   // Default return original
+  resolvedUrlsCache.set(trimmed, trimmed);
   return trimmed;
 }
 

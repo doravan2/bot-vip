@@ -40,7 +40,10 @@ import {
   getTelegramConfig,
   isTelegramTarget,
   resolveTelegramChatId,
+  registerTelegramIncomingHandler,
 } from './telegramService.ts';
+import { isWatermarkActiveForGroup } from './watermarkAiService.ts';
+import { applyChatFilter } from './chatFilterService.ts';
 
 export interface WhatsAppSessionState {
   isConnected: boolean;
@@ -249,26 +252,31 @@ export async function getRealWhatsAppGroups(): Promise<RealGroupInfo[]> {
 
 /**
  * Obter Canais (Newsletters) do WhatsApp vinculados à conta conectada (@newsletter)
+ * Utiliza Raw Query de baixo nível direto aos servidores da Meta (IQ Newsletter) + fallbacks
  */
 export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
   if (!currentSocket || !state.isConnected) {
-    console.log('[Baileys Newsletter] Socket não conectado ou indisponível.');
+    console.warn('[Baileys] Socket não conectado. Impossível buscar canais.');
     return [];
   }
 
   const channelsResult: RealGroupInfo[] = [];
   const processedJids = new Set<string>();
 
-  // Helper para adicionar canal sem duplicatas
+  // Helper para adicionar canal sem duplicatas e padronizar
   const addChannel = (jid: string, rawName?: string, subscribersCount?: number) => {
-    if (!jid || !jid.endsWith('@newsletter') || processedJids.has(jid)) return;
-    processedJids.add(jid);
+    if (!jid) return;
+    let cleanJid = jid;
+    if (!cleanJid.includes('@')) cleanJid = `${cleanJid}@newsletter`;
+    if (cleanJid.includes('@g.us')) cleanJid = cleanJid.replace('@g.us', '@newsletter');
+    if (!cleanJid.endsWith('@newsletter') || processedJids.has(cleanJid)) return;
 
-    const name = rawName && rawName.trim() ? rawName.trim() : 'Canal do WhatsApp';
-    cachedParticipatingGroups.set(jid, name);
+    processedJids.add(cleanJid);
+    const name = rawName && rawName.trim() && rawName !== 'undefined' ? rawName.trim() : 'Canal do WhatsApp';
+    cachedParticipatingGroups.set(cleanJid, name);
 
     channelsResult.push({
-      id: jid,
+      id: cleanJid,
       name,
       membersCount: subscribersCount || 1000,
       maxCapacity: 1000000,
@@ -276,22 +284,66 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
     });
   };
 
-  // 1. FETCH ATIVO: Tentar buscar diretamente nos servidores do WhatsApp via newsletterSubscribed()
-  let fetchSucceeded = false;
+  console.log('--- FORÇANDO BUSCA DE CANAIS (RAW QUERY) ---');
+
+  // 1. RAW QUERY de baixo nível direto aos servidores do WhatsApp
+  try {
+    const result = await currentSocket.query({
+      tag: 'iq',
+      attrs: {
+        type: 'get',
+        xmlns: 'newsletter',
+        to: '@s.whatsapp.net',
+      },
+      content: [
+        { tag: 'subscriptions', attrs: {} }
+      ]
+    });
+
+    console.log('[Baileys-Raw] Resposta bruta recebida da Meta!');
+
+    if (result && result.content && Array.isArray(result.content)) {
+      const subscriptions = result.content.find((c: any) => c.tag === 'subscriptions');
+
+      if (subscriptions && subscriptions.content && Array.isArray(subscriptions.content)) {
+        for (const node of subscriptions.content) {
+          if (node.tag === 'newsletter') {
+            let id = node.attrs?.id || node.attrs?.jid;
+            let name = 'Canal Desconhecido';
+
+            if (node.content && Array.isArray(node.content)) {
+              const nameNode = node.content.find((c: any) => c.tag === 'name' || c.tag === 'subject');
+              if (nameNode && nameNode.content) {
+                if (Buffer.isBuffer(nameNode.content)) {
+                  name = nameNode.content.toString('utf-8');
+                } else if (typeof nameNode.content === 'string') {
+                  name = nameNode.content;
+                } else if (Array.isArray(nameNode.content)) {
+                  name = nameNode.content.map((item: any) => item?.content || item).join('');
+                } else {
+                  name = String(nameNode.content);
+                }
+              }
+            }
+
+            if (id) {
+              addChannel(id, name);
+            }
+          }
+        }
+      }
+    }
+    console.log(`[Baileys-Raw] SUCESSO! Encontrados ${channelsResult.length} canais via Raw Query!`);
+  } catch (error: any) {
+    console.error('[Baileys-Erro] Falha na Raw Query de Canais:', error?.message || error);
+  }
+
+  // 2. FETCH ATIVO COMPLEMENTAR: sock.newsletterSubscribed()
   if (typeof (currentSocket as any).newsletterSubscribed === 'function') {
     try {
-      console.log('[Baileys Newsletter] Executando fetch ativo via sock.newsletterSubscribed()...');
       const rawNewsletters = await (currentSocket as any).newsletterSubscribed();
-      
-      console.log(
-        '[Baileys Newsletter Debug] Payload bruto retornado do WhatsApp:',
-        JSON.stringify(rawNewsletters, null, 2)
-      );
-
       if (Array.isArray(rawNewsletters)) {
-        fetchSucceeded = true;
         for (const nl of rawNewsletters) {
-          // Extrai o JID e Nome considerando estruturas de viewer_metadata, thread_metadata ou campos raiz
           const jid = nl?.id || nl?.jid || nl?.newsletterJid || nl?.key?.remoteJid;
           const name =
             nl?.name ||
@@ -299,14 +351,11 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
             nl?.thread_metadata?.name?.text ||
             nl?.thread_meta?.name?.text ||
             nl?.viewer_metadata?.title ||
-            nl?.viewer_meta?.title ||
-            'Canal do WhatsApp';
-
+            nl?.viewer_meta?.title;
           const subscribers =
             nl?.subscribers ||
             nl?.subscribers_count ||
-            nl?.thread_metadata?.subscribers_count ||
-            1000;
+            nl?.thread_metadata?.subscribers_count;
 
           if (jid) {
             addChannel(jid, name, Number(subscribers));
@@ -314,16 +363,12 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
         }
       }
     } catch (err: any) {
-      console.warn('[Baileys Newsletter] Erro ao chamar newsletterSubscribed():', err?.message || err);
+      console.warn('[Baileys Newsletter] Erro complementar ao chamar newsletterSubscribed():', err?.message || err);
     }
-  } else {
-    console.log('[Baileys Newsletter] O método sock.newsletterSubscribed() não está disponível nesta versão do Baileys.');
   }
 
-  // 2. FALLBACK DE PROTOCOLO: Se o fetch ativo não retornou ou não estava disponível, consultar os caches em memória
-  console.log(`[Baileys Newsletter] Executando fallback em cache de chats (Canais encontrados até agora: ${channelsResult.length})...`);
+  // 3. FALLBACK DE PROTOCOLO: Caches locais de chats
   try {
-    // A. Cache de grupos/chats local do service
     const groupsMap = await refreshGroupCache(currentSocket);
     for (const [id, name] of groupsMap.entries()) {
       if (id.endsWith('@newsletter')) {
@@ -331,7 +376,6 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
       }
     }
 
-    // B. Inspection de (currentSocket as any).chats se disponível
     const socketChats = (currentSocket as any)?.chats;
     if (socketChats && typeof socketChats === 'object') {
       const chatEntries = Array.isArray(socketChats) ? socketChats : Object.values(socketChats);
@@ -344,7 +388,7 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
       }
     }
   } catch (fallbackErr: any) {
-    console.warn('[Baileys Newsletter] Exceção durante o fallback de chats:', fallbackErr?.message || fallbackErr);
+    console.warn('[Baileys Newsletter] Exceção no fallback de chats:', fallbackErr?.message || fallbackErr);
   }
 
   console.log(`[Baileys Newsletter] Total final de canais sincronizados: ${channelsResult.length}`);
@@ -639,6 +683,90 @@ export async function initBaileysSocket(): Promise<void> {
 }
 
 /**
+ * Safely downloads media from a WhatsApp message without throwing 'Cannot derive from empty media key'
+ * Handles both encrypted group messages and unencrypted channels/newsletters CDN URLs.
+ */
+async function downloadWhatsAppMediaSafe(
+  imageMsg: any,
+  downloadContentFromMessage: any,
+  isChannel: boolean
+): Promise<Buffer | null> {
+  if (!imageMsg) return null;
+
+  // Check if mediaKey is valid
+  const rawKey = imageMsg.mediaKey;
+  const hasValidMediaKey =
+    rawKey !== null &&
+    rawKey !== undefined &&
+    ((Buffer.isBuffer(rawKey) || rawKey instanceof Uint8Array) ? rawKey.length > 0 : typeof rawKey === 'string' ? rawKey.trim().length > 0 : false);
+
+  // 1. If it's a channel/newsletter or has no valid media key, attempt direct CDN URL fetch if available
+  if (isChannel || !hasValidMediaKey) {
+    if (imageMsg.url && typeof imageMsg.url === 'string' && imageMsg.url.startsWith('http')) {
+      try {
+        const res = await fetch(imageMsg.url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          },
+        });
+        if (res.ok) {
+          const ab = await res.arrayBuffer();
+          if (ab.byteLength > 100) {
+            console.log(`[Replica Zap] 📸 Imagem pública de canal/newsletter baixada via CDN direta (${ab.byteLength} bytes)!`);
+            return Buffer.from(ab);
+          }
+        }
+      } catch (directErr) {
+        console.log('[Replica Zap] Aviso ao tentar download direto via URL CDN:', directErr);
+      }
+    }
+
+    if (!hasValidMediaKey) {
+      console.log('[Replica Zap] ℹ️ Mídia sem chave de criptografia (mediaKey vazia, ex: canal ou newsletter pública). A foto do produto será obtida automaticamente do link oficial.');
+      return null;
+    }
+  }
+
+  // 2. Encrypted stream download via Baileys if mediaKey is valid
+  if (downloadContentFromMessage && hasValidMediaKey) {
+    try {
+      const stream = await downloadContentFromMessage(imageMsg, 'image');
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      const finalBuffer = Buffer.concat(chunks);
+      if (finalBuffer.length > 0) {
+        console.log(`[Replica Zap] 📸 Imagem do produto baixada e decodificada (${finalBuffer.length} bytes)!`);
+        return finalBuffer;
+      }
+    } catch (dlErr: any) {
+      const errMsg = String(dlErr?.message || dlErr);
+      if (errMsg.includes('Cannot derive from empty media key') || errMsg.includes('empty media key')) {
+        console.log('[Replica Zap] ℹ️ MediaKey vazio no cabeçalho. A foto do produto será gerada automaticamente pelo link da oferta.');
+      } else {
+        console.warn('[Replica Zap] Aviso ao decodificar imagem da mensagem:', errMsg);
+      }
+    }
+  }
+
+  // 3. Fallback: Check if thumbnail exists or direct URL can be used
+  if (imageMsg.url && typeof imageMsg.url === 'string' && imageMsg.url.startsWith('http')) {
+    try {
+      const res = await fetch(imageMsg.url);
+      if (res.ok) {
+        const ab = await res.arrayBuffer();
+        if (ab.byteLength > 100) {
+          return Buffer.from(ab);
+        }
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+/**
  * Automatically catches messages in monitored source groups,
  * downloads the product image, monetizes the copy with sf20250625192813,
  * cleans competitor branding, and dispatches to destination group automatically!
@@ -768,8 +896,40 @@ async function handleAutomaticReplicaMessage(
 
     if (!imageMsg && !rawCaption) return;
 
+    // Download image buffer safely if image present in WhatsApp message
+    const imageBuffer = await downloadWhatsAppMediaSafe(imageMsg, downloadContentFromMessage, isChannel);
+
+    await executeReplicaPipeline({
+      matchedRule,
+      rawCaption,
+      imageBuffer,
+      sourceDisplayTitle: groupSubject || matchedRule.sourceName,
+      sourcePlatform: 'WhatsApp',
+      remoteJid,
+    });
+  } catch (err: any) {
+    console.error('[Replica Zap Automático] Erro no processamento e envio:', err);
+  }
+}
+
+/**
+ * Universal pipeline to process and replicate an offer from ANY source (WhatsApp or Telegram)
+ * to ALL target groups/channels (WhatsApp groups and Telegram channels).
+ */
+export async function executeReplicaPipeline(params: {
+  matchedRule: ActiveSourceRule;
+  rawCaption: string;
+  imageBuffer: Buffer | null;
+  sourceDisplayTitle: string;
+  sourcePlatform: 'WhatsApp' | 'Telegram';
+  remoteJid?: string;
+}): Promise<{ success: boolean; sendResults: string[]; message?: string }> {
+  const { matchedRule, rawCaption, sourceDisplayTitle, sourcePlatform, remoteJid } = params;
+  let imageBuffer = params.imageBuffer;
+
+  try {
     // =========================================================================
-    // FILTRO PRECOCE DE INSTÂNCIAS / MARKETPLACES ATIVOS (STOP INSTANTÂNEO)
+    // 1. FILTRO PRECOCE DE INSTÂNCIAS / MARKETPLACES ATIVOS (STOP INSTANTÂNEO)
     // =========================================================================
     const earlyMarketplaces = getMarketplacesConfig();
     const enabledMap: Record<string, boolean> = {
@@ -785,8 +945,8 @@ async function handleAutomaticReplicaMessage(
     const productCandidates = allUrlsInMsg.filter((u) => !isCompetitorShareUrl(u));
 
     if (productCandidates.length === 0) {
-      console.log(`[Replica Zap] 🚫 Mensagem descartada: Não contém links de produtos dos marketplaces suportados (apenas links concorrentes ou texto sem produto).`);
-      return;
+      console.log(`[Replica Pipeline] 🚫 Mensagem de ${sourcePlatform} descartada: Não contém links de produtos dos marketplaces suportados.`);
+      return { success: false, sendResults: [], message: 'Sem links de produtos suportados' };
     }
 
     let hasAtLeastOneEnabledMp = false;
@@ -818,16 +978,16 @@ async function handleAutomaticReplicaMessage(
     if (!hasAtLeastOneEnabledMp) {
       const disabledListStr = detectedMpsForLog.map((m) => m.toUpperCase()).join(', ');
       console.log(
-        `[Replica Zap] 🚫 MENSAGEM BLOQUEADA: Todos os marketplaces detectados (${disabledListStr}) estão DESATIVADOS nas configurações.`
+        `[Replica Pipeline] 🚫 MENSAGEM BLOQUEADA: Todos os marketplaces detectados (${disabledListStr}) estão DESATIVADOS nas configurações.`
       );
       addReplicaLog({
         id: `log-skip-${Date.now()}`,
         timestamp: new Date().toLocaleTimeString('pt-BR'),
-        sourceGroupName: groupSubject || matchedRule.sourceName,
+        sourceGroupName: sourceDisplayTitle,
         targetGroupName: matchedRule.targetGroup,
         originalText: rawCaption,
         finalCaption: '',
-        hasImage: !!imageMsg,
+        hasImage: !!imageBuffer,
         imageSource: 'none',
         originalUrl: productCandidates[0],
         monetizedUrl: '',
@@ -836,13 +996,13 @@ async function handleAutomaticReplicaMessage(
         status: 'skipped',
         errorMessage: `Marketplace ${disabledListStr} desativado. Mensagem bloqueada instantaneamente.`,
       });
-      return;
+      return { success: false, sendResults: [], message: `Marketplaces desativados: ${disabledListStr}` };
     }
 
     // =========================================================
-    // CHECAGEM ÚNICA (ESTOQUE + FOTO) - analisar_produto_meli
+    // 2. CHECAGEM ÚNICA (ESTOQUE + FOTO) - analisar_produto_meli
     // =========================================================
-    const mensagem_veio_com_foto = !!imageMsg;
+    const mensagem_veio_com_foto = !!imageBuffer;
     let foto_capturada_meli: string | null = null;
 
     const isMeliMessage =
@@ -851,145 +1011,69 @@ async function handleAutomaticReplicaMessage(
       /mercadolivre\.com\.br/i.test(rawCaption);
 
     if (matchedRule.validateMeliStock !== false && (isMeliMessage || matchedRule.onlyMeliDeals)) {
-      // 1. Fazemos a checagem única (Estoque + Foto)
       const dados_produto = await analisar_produto_meli(rawCaption);
 
-      // 2. Verifica se é lixo/esgotado
       if (!dados_produto.valido) {
-        console.log("Produto esgotado ou pausado. Ignorando...");
+        console.log(`[Replica Pipeline] Produto esgotado ou pausado. Ignorando mensagem de [${sourceDisplayTitle}]...`);
         addReplicaLog({
           id: `log-skip-${Date.now()}`,
           timestamp: new Date().toLocaleTimeString('pt-BR'),
-          sourceGroupName: groupSubject || matchedRule.sourceName,
+          sourceGroupName: sourceDisplayTitle,
           targetGroupName: matchedRule.targetGroup,
           originalText: rawCaption,
           finalCaption: '',
-          hasImage: !!imageMsg,
+          hasImage: !!imageBuffer,
           imageSource: 'none',
           status: 'error',
           errorMessage: dados_produto.motivo || 'Produto esgotado ou pausado. Ignorando...',
         });
-        // continue (ignora o resto e pula para a próxima mensagem do grupo)
-        return;
+        return { success: false, sendResults: [], message: dados_produto.motivo || 'Produto esgotado ou pausado' };
       }
 
       foto_capturada_meli = dados_produto.foto_url;
-      console.log(`[Replica Zap] ✅ Produto válido e em estoque! Foto da API capturada: ${foto_capturada_meli || 'nenhuma'}`);
+      console.log(`[Replica Pipeline] ✅ Produto válido e em estoque! Foto da API capturada: ${foto_capturada_meli || 'nenhuma'}`);
     }
 
-    // 4. Download image buffer if image present
-    let imageBuffer: Buffer | null = null;
-    if (imageMsg && downloadContentFromMessage) {
-      try {
-        const stream = await downloadContentFromMessage(imageMsg, 'image');
-        const chunks: Buffer[] = [];
-        for await (const chunk of stream) {
-          chunks.push(chunk);
-        }
-        imageBuffer = Buffer.concat(chunks);
-        console.log(`[Replica Zap] 📸 Imagem do produto baixada (${imageBuffer.length} bytes)!`);
-      } catch (dlErr) {
-        console.error('[Replica Zap] Falha ao baixar mídia da mensagem:', dlErr);
-      }
-    }
-
-    // 5. Resolve target group JID
-    let targetJid = matchedRule.targetJid;
-    let targetSubject = matchedRule.targetGroup;
-
-    if (!targetJid) {
-      const cleanTargetName = matchedRule.targetGroup
-        .replace(/[^\p{L}\p{N}]/gu, '')
-        .trim()
-        .toLowerCase();
-
-      // Check cached groups first
-      for (const [jid, subj] of cachedParticipatingGroups.entries()) {
-        const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-        if (
-          cleanSubj &&
-          (cleanSubj === cleanTargetName ||
-            cleanSubj.includes(cleanTargetName) ||
-            cleanTargetName.includes(cleanSubj))
-        ) {
-          targetJid = jid;
-          targetSubject = subj;
-          matchedRule.targetJid = jid;
-          break;
-        }
-      }
-
-      // If not in cache, fetch fresh
-      if (!targetJid) {
-        const groupsMap = await refreshGroupCache(sock);
-        for (const [jid, subj] of groupsMap.entries()) {
-          const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-          if (
-            cleanSubj &&
-            (cleanSubj === cleanTargetName ||
-              cleanSubj.includes(cleanTargetName) ||
-              cleanTargetName.includes(cleanSubj))
-          ) {
-            targetJid = jid;
-            targetSubject = subj;
-            matchedRule.targetJid = jid;
-            break;
-          }
-        }
-      }
-
-      if (targetJid) {
-        matchedRule.sourceJid = remoteJid;
-        setActiveSourceRules(getActiveSourceRules());
-      }
-    }
-
-    // 6. Obtain official invite link of the destination group
+    // =========================================================
+    // 3. RESOLVER LINK DE CONVITE DO GRUPO DE DESTINO
+    // =========================================================
     const customConfiguredLink = getVipGroupLink();
     let targetInviteLink = customConfiguredLink && customConfiguredLink !== DEFAULT_VIP_GROUP_LINK
       ? customConfiguredLink
       : '';
 
-    if (!targetInviteLink) {
-      const activeSock = currentSocket || sock;
-      if (targetJid && activeSock && state.isConnected && typeof activeSock.groupInviteCode === 'function') {
-        try {
-          const inviteCode = await activeSock.groupInviteCode(targetJid);
-          if (inviteCode) {
-            targetInviteLink = `https://chat.whatsapp.com/${inviteCode}`;
-            console.log(`[Replica Zap] 🔗 Link de convite oficial obtido para "${targetSubject}": ${targetInviteLink}`);
-          }
-        } catch (invErr: any) {
-          console.warn(`[Replica Zap] Aviso ao obter groupInviteCode de ${targetJid}:`, invErr?.message);
+    if (!targetInviteLink && currentSocket && state.isConnected && matchedRule.targetJid && typeof currentSocket.groupInviteCode === 'function') {
+      try {
+        const inviteCode = await currentSocket.groupInviteCode(matchedRule.targetJid);
+        if (inviteCode) {
+          targetInviteLink = `https://chat.whatsapp.com/${inviteCode}`;
         }
-      }
+      } catch {}
     }
 
     if (!targetInviteLink) {
       targetInviteLink = customConfiguredLink || DEFAULT_VIP_GROUP_LINK;
     }
 
-    // 7. Clean copy, monetize all product links and inject the destination group link
+    // =========================================================
+    // 4. LIMPAR COPY E MONETIZAR TODOS OS LINKS
+    // =========================================================
     const processed = await cleanAndMonetizeCompetitorMessage(
       rawCaption,
       OFFICIAL_USER_AFFILIATE_ID,
       targetInviteLink
     );
 
-    // Strict Marketplace Connections Filter:
-    // If the message has no product links or all detected marketplaces are disabled, STOP immediately!
     if (!processed.shouldForward) {
-      console.log(
-        `[Replica Zap] 🚫 MENSAGEM FILTRADA E NÃO REPLICADA: ${processed.blockReason || 'Marketplace desativado nas conexões.'}`
-      );
+      console.log(`[Replica Pipeline] 🚫 MENSAGEM FILTRADA: ${processed.blockReason || 'Bloqueada pelo motor de afiliação.'}`);
       addReplicaLog({
         id: `log-skip-${Date.now()}`,
         timestamp: new Date().toLocaleTimeString('pt-BR'),
-        sourceGroupName: groupSubject || matchedRule.sourceName,
+        sourceGroupName: sourceDisplayTitle,
         targetGroupName: matchedRule.targetGroup,
         originalText: rawCaption,
         finalCaption: '',
-        hasImage: !!imageMsg,
+        hasImage: !!imageBuffer,
         imageSource: 'none',
         originalUrl: processed.originalUrl,
         monetizedUrl: '',
@@ -998,7 +1082,7 @@ async function handleAutomaticReplicaMessage(
         status: 'skipped',
         errorMessage: processed.blockReason || 'Marketplace desativado nas conexões.',
       });
-      return;
+      return { success: false, sendResults: [], message: processed.blockReason };
     }
 
     const {
@@ -1007,8 +1091,6 @@ async function handleAutomaticReplicaMessage(
       monetizedUrl,
       marketplace,
       methodUsed,
-      isMeli,
-      isOfficialMeliShort,
       requiresConversion,
       mlbId,
       pureProductUrl,
@@ -1017,15 +1099,8 @@ async function handleAutomaticReplicaMessage(
     let finalCleanedCopy = cleanedCopy;
     let finalMonetizedUrl = monetizedUrl;
 
-    // Automatic Direct Conversion for Mercado Livre:
-    // If it's a Mercado Livre link and DOES NOT yet have an official meli.la short link:
-    // Try instant background conversion via Python Cookies API.
-    // If not yet converted, use the clean canonical product URL so copying NEVER stops!
     if (requiresConversion && pureProductUrl) {
-      console.log(
-        `[Conversor Meli Direct] 🔄 Tentando conversão instantânea via Cookies API para MLB: ${mlbId || 'MLB'}...`
-      );
-
+      console.log(`[Conversor Meli Direct] 🔄 Tentando conversão instantânea via Cookies API para MLB: ${mlbId || 'MLB'}...`);
       try {
         const directConv = await convertMeliLinkViaCookies(pureProductUrl);
         if (directConv?.monetized_url && directConv.monetized_url.includes('meli.la')) {
@@ -1034,29 +1109,83 @@ async function handleAutomaticReplicaMessage(
           if (mlbId) {
             setCustomMeliLink(mlbId, finalMonetizedUrl);
           }
-          console.log(`[Conversor Meli Direct] 🎯 Link Oficial meli.la gerado em background: ${finalMonetizedUrl}`);
+          console.log(`[Conversor Meli Direct] 🎯 Link Oficial meli.la gerado: ${finalMonetizedUrl}`);
         } else {
-          console.log(`[Conversor Meli Direct] 🚀 Usando URL canônica limpa do produto: ${pureProductUrl}`);
           finalMonetizedUrl = pureProductUrl;
         }
       } catch (convErr) {
-        console.warn('[Conversor Meli Direct] Falha na chamada da Cookies API, utilizando URL canônica limpa:', convErr);
+        console.warn('[Conversor Meli Direct] Falha na chamada da Cookies API, utilizando URL canônica:', convErr);
         finalMonetizedUrl = pureProductUrl;
       }
     }
 
-    // 8. REGRA DE IMAGEM:
-    // Se o grupo já mandou com foto -> usamos a foto original deles.
-    // Quando o produto NÃO tiver imagem, faz toda a conversão e antes de enviar a mensagem espera ele carregar por si só a imagem que o próprio link gera!
+    // =========================================================
+    // 4.1 APLICAR FILTRO DE CHAT (Remover frases, chamadas e linhas indesejadas)
+    // =========================================================
+    finalCleanedCopy = applyChatFilter(
+      finalCleanedCopy,
+      sourceDisplayTitle,
+      matchedRule.sourceName,
+      matchedRule.targetGroup,
+      ...(Array.isArray(matchedRule.targetGroups) ? matchedRule.targetGroups : [])
+    );
+
+    // =========================================================
+    // =========================================================
+    // 5. REGRA DE IMAGEM & FILTRO ANTI-MARCA D'ÁGUA (Substituir por Foto Limpa HD Oficial)
+    // =========================================================
     let imageSource: 'source-media' | 'auto-link-photo' | 'none' = imageBuffer ? 'source-media' : 'none';
 
-    if (mensagem_veio_com_foto && imageBuffer) {
-      console.log("O grupo já mandou com foto. Vamos usar a foto original deles.");
+    // Checa se o Filtro Anti-Marca d'Água está ativo especificamente para este grupo de atuação
+    const isFilterActiveForThisGroup =
+      isWatermarkActiveForGroup(sourceDisplayTitle) ||
+      isWatermarkActiveForGroup(matchedRule.sourceName || '') ||
+      isWatermarkActiveForGroup(matchedRule.targetGroup || '') ||
+      (Array.isArray(matchedRule.targetGroups) && matchedRule.targetGroups.some((g) => isWatermarkActiveForGroup(g)));
+
+    if (mensagem_veio_com_foto && imageBuffer && isFilterActiveForThisGroup) {
+      console.log(`[Filtro Anti-Marca d'Água] 🛡️ Filtro ativo para o grupo [${sourceDisplayTitle}]! Buscando Foto Limpa HD Oficial do marketplace...`);
+      const candidateUrl = finalMonetizedUrl || pureProductUrl || originalUrl || monetizedUrl;
+      let cleanPhotoFound = false;
+
+      // 1. Tentar foto original da API do produto Mercado Livre
+      if (foto_capturada_meli) {
+        try {
+          const photoRes = await fetch(foto_capturada_meli, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+          if (photoRes.ok) {
+            const ab = await photoRes.arrayBuffer();
+            imageBuffer = Buffer.from(ab);
+            imageSource = 'auto-link-photo';
+            cleanPhotoFound = true;
+            console.log(`[Filtro Anti-Marca d'Água] ✅ Foto substituída pela Foto Limpa HD Oficial da API (${imageBuffer.length} bytes)!`);
+          }
+        } catch (apiPhotoErr) {
+          console.warn("[Filtro Anti-Marca d'Água] Erro ao baixar foto limpa da API:", apiPhotoErr);
+        }
+      }
+
+      // 2. Se não achou na API do ML, busca a foto oficial direto da página do marketplace
+      if (!cleanPhotoFound && candidateUrl) {
+        try {
+          const photoData = await fetchProductImageBuffer(candidateUrl);
+          if (photoData?.buffer) {
+            imageBuffer = photoData.buffer;
+            imageSource = 'auto-link-photo';
+            cleanPhotoFound = true;
+            console.log(`[Filtro Anti-Marca d'Água] ✅ Foto substituída pela Foto Limpa HD Oficial direto da página do marketplace (${imageBuffer.length} bytes)!`);
+          }
+        } catch (pagePhotoErr) {
+          console.warn("[Filtro Anti-Marca d'Água] Erro ao extrair foto limpa da página:", pagePhotoErr);
+        }
+      }
+
+      if (!cleanPhotoFound) {
+        console.log(`[Filtro Anti-Marca d'Água] ℹ️ Foto limpa não encontrada no link; mantendo mídia original.`);
+      }
+    } else if (mensagem_veio_com_foto && imageBuffer) {
       imageSource = 'source-media';
     } else {
-      console.log("O produto não tem imagem original. Conversão concluída! Aguardando o próprio link gerar e carregar a imagem antes de enviar...");
-
-      // 1. Se capturou a foto direta da API oficial do ML (pictures[0])
+      // 1. Foto capturada da API do Mercado Livre
       if (foto_capturada_meli && matchedRule.autoFetchProductImage !== false) {
         try {
           const photoRes = await fetch(foto_capturada_meli, {
@@ -1066,49 +1195,43 @@ async function handleAutomaticReplicaMessage(
             const ab = await photoRes.arrayBuffer();
             imageBuffer = Buffer.from(ab);
             imageSource = 'auto-link-photo';
-            console.log(`[Replica Zap] 📸 Imagem principal da API do produto carregada (${imageBuffer.length} bytes)!`);
+            console.log(`[Replica Pipeline] 📸 Imagem da API do produto carregada (${imageBuffer.length} bytes)!`);
           }
         } catch (photoErr) {
-          console.warn('[Replica Zap] Falha ao baixar foto da API do ML, aguardando imagem do link...', photoErr);
+          console.warn('[Replica Pipeline] Falha ao baixar foto da API do ML, tentando via link...', photoErr);
         }
       }
 
-      // 2. Se ainda não carregou imagem, espera o próprio link (Mercado Livre, Shopee, Amazon, Magalu) carregar sua imagem por si só
+      // 2. Foto extraída por metatags OpenGraph do produto
       if (!imageBuffer && matchedRule.autoFetchProductImage !== false) {
         const candidateUrl = finalMonetizedUrl || pureProductUrl || originalUrl || monetizedUrl;
         if (candidateUrl) {
-          console.log(`[Replica Zap] ⏳ Aguardando o link gerar a imagem do produto: "${candidateUrl}"...`);
-          // Espera o link carregar e responder com sua imagem antes de enviar
-          await new Promise((resolve) => setTimeout(resolve, 1800));
-
+          console.log(`[Replica Pipeline] ⏳ Extraindo foto do produto do link: "${candidateUrl}"...`);
           try {
             const photoData = await fetchProductImageBuffer(candidateUrl);
             if (photoData?.buffer) {
               imageBuffer = photoData.buffer;
               imageSource = 'auto-link-photo';
-              console.log(`[Replica Zap] ✅ Imagem gerada pelo próprio link carregada com sucesso (${imageBuffer.length} bytes)!`);
+              console.log(`[Replica Pipeline] ✅ Foto do produto extraída com sucesso (${imageBuffer.length} bytes)!`);
             }
           } catch (imgErr) {
-            console.warn('[Replica Zap] Aviso ao extrair imagem do link:', imgErr);
+            console.warn('[Replica Pipeline] Aviso ao extrair imagem do link:', imgErr);
           }
         }
       }
     }
 
-    const foto_para_enviar = imageBuffer
-      ? (mensagem_veio_com_foto ? 'usar_foto_do_whatsapp' : 'imagem_gerada_pelo_link')
-      : 'sem_imagem';
-    console.log(`[Replica Zap] Pronto para postar! Foto a ser usada: ${foto_para_enviar}`);
-
-    // 9. Automatically dispatch to ALL Destination Groups (WhatsApp + Telegram)!
-    const sendSock = currentSocket || sock;
+    // =========================================================
+    // 6. ENVIAR PARA TODOS OS DESTINOS (WhatsApp & Telegram)
+    // =========================================================
+    const sendSock = currentSocket;
     let allTargets: string[] = [];
     if (Array.isArray(matchedRule.targetGroups) && matchedRule.targetGroups.length > 0) {
       allTargets = matchedRule.targetGroups;
     } else if (matchedRule.targetGroup) {
       allTargets = matchedRule.targetGroup.split(',').map((s) => s.trim()).filter(Boolean);
-    } else if (targetSubject) {
-      allTargets = [targetSubject];
+    } else {
+      allTargets = ['Grupo VIP de Ofertas'];
     }
 
     let atLeastOneSent = false;
@@ -1121,10 +1244,11 @@ async function handleAutomaticReplicaMessage(
       const isTg = isTelegramTarget(tgt, platformHint);
 
       if (isTg) {
+        // Envio para Canal ou Grupo do Telegram
         try {
           const directChatId = matchedRule.targetChatIds?.[i];
           const resolvedChatId = directChatId || resolveTelegramChatId(tgt);
-          console.log(`[Replica Zap] ✈️ Enviando oferta para canal/grupo Telegram: "${tgt}" -> Chat ID: ${resolvedChatId}`);
+          console.log(`[Replica Pipeline] ✈️ Enviando para Telegram: "${tgt}" -> Chat ID: ${resolvedChatId}`);
           const tgRes = await sendTelegramMessage(
             resolvedChatId,
             finalCleanedCopy,
@@ -1132,43 +1256,41 @@ async function handleAutomaticReplicaMessage(
           );
           if (tgRes.success) {
             atLeastOneSent = true;
-            sendResults.push(`Telegram: ${tgt} (${resolvedChatId})`);
-            console.log(`[Replica Zap] ✅ Mensagem entregue no Telegram com sucesso (${tgt} -> ${resolvedChatId})!`);
+            sendResults.push(`Telegram: ${tgt}`);
+            console.log(`[Replica Pipeline] ✅ Mensagem entregue no Telegram com sucesso (${tgt})!`);
           } else {
-            sendResults.push(`Telegram (${tgt} -> ${resolvedChatId}) erro: ${tgRes.error}`);
-            console.warn(`[Replica Zap] ❌ Telegram recusou envio (${tgt} -> ${resolvedChatId}):`, tgRes.error);
+            sendResults.push(`Telegram (${tgt}) erro: ${tgRes.error}`);
+            console.warn(`[Replica Pipeline] ❌ Telegram recusou envio (${tgt}):`, tgRes.error);
           }
         } catch (tgErr: any) {
           sendResults.push(`Telegram (${tgt}) erro: ${tgErr?.message}`);
-          console.warn(`[Replica Zap] Erro ao enviar para Telegram (${tgt}):`, tgErr);
         }
         continue;
       }
 
-      // WhatsApp target
+      // Envio para Grupo do WhatsApp
       if (!sendSock || !state.isConnected) {
-        console.warn(`[Replica Zap] WhatsApp desconectado ao tentar enviar mensagem para "${tgt}".`);
-        sendResults.push(`WhatsApp (${tgt}) falha: Sessão desconectada`);
+        console.warn(`[Replica Pipeline] WhatsApp desconectado ao tentar enviar para "${tgt}".`);
+        sendResults.push(`WhatsApp (${tgt}) falha: WhatsApp desconectado`);
         continue;
       }
 
-      let thisTargetJid = targetJid;
-      if (!thisTargetJid || tgt !== matchedRule.targetGroup) {
-        const cleanTgt = tgt.replace(/^\[WhatsApp\]\s*/i, '').replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-        for (const [jid, subj] of cachedParticipatingGroups.entries()) {
-          const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-          if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
-            thisTargetJid = jid;
-            break;
-          }
+      let thisTargetJid = matchedRule.targetJid;
+      const cleanTgt = tgt.replace(/^\[WhatsApp\]\s*/i, '').replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
+
+      // Buscar JID correspondente nos grupos participando
+      for (const [jid, subj] of cachedParticipatingGroups.entries()) {
+        const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
+        if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
+          thisTargetJid = jid;
+          break;
         }
       }
 
-      // Fallback 1: Fresh cache refresh from socket
+      // Fallback: atualizar cache de grupos
       if (!thisTargetJid) {
         try {
           const freshMap = await refreshGroupCache(sendSock, true);
-          const cleanTgt = tgt.replace(/^\[WhatsApp\]\s*/i, '').replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
           for (const [jid, subj] of freshMap.entries()) {
             const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
             if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
@@ -1181,12 +1303,11 @@ async function handleAutomaticReplicaMessage(
         } catch {}
       }
 
-      // Fallback 2: If still not found by string, pick any participating group that is NOT the source group
+      // Se ainda não encontrou, usa qualquer grupo de destino conectado
       if (!thisTargetJid && cachedParticipatingGroups.size > 0) {
-        for (const [jid, subj] of cachedParticipatingGroups.entries()) {
-          if (jid !== remoteJid) {
+        for (const [jid] of cachedParticipatingGroups.entries()) {
+          if (!remoteJid || jid !== remoteJid) {
             thisTargetJid = jid;
-            console.log(`[Replica Zap] 🔄 Fallback de grupo de destino ativado: Usando grupo "${subj}" (${jid})`);
             break;
           }
         }
@@ -1210,24 +1331,26 @@ async function handleAutomaticReplicaMessage(
           }
           atLeastOneSent = true;
           sendResults.push(`WhatsApp: ${tgt}`);
-          console.log(`[Replica Zap] ✅ Mensagem entregue no WhatsApp com sucesso (${tgt})!`);
+          console.log(`[Replica Pipeline] ✅ Mensagem entregue no WhatsApp com sucesso (${tgt} -> ${thisTargetJid})!`);
         } catch (waErr: any) {
           sendResults.push(`WhatsApp (${tgt}) erro: ${waErr?.message || waErr}`);
-          console.warn(`[Replica Zap] Erro ao enviar no WhatsApp (${tgt}):`, waErr?.message || waErr);
+          console.warn(`[Replica Pipeline] Erro ao enviar no WhatsApp (${tgt}):`, waErr?.message || waErr);
         }
       } else {
         sendResults.push(`WhatsApp (${tgt}): JID não encontrado`);
       }
     }
 
-    // 10. Update counter & store event in log
+    // =========================================================
+    // 7. ATUALIZAR CONTADORES E REGISTRAR LOG DE CLONAGEM
+    // =========================================================
     matchedRule.dealsCapturedToday = (matchedRule.dealsCapturedToday || 0) + 1;
     setActiveSourceRules(getActiveSourceRules());
 
     addReplicaLog({
       id: `log-${Date.now()}`,
       timestamp: new Date().toLocaleTimeString('pt-BR'),
-      sourceGroupName: groupSubject || matchedRule.sourceName,
+      sourceGroupName: sourceDisplayTitle,
       targetGroupName: allTargets.join(', '),
       originalText: rawCaption,
       finalCaption: finalCleanedCopy,
@@ -1236,22 +1359,144 @@ async function handleAutomaticReplicaMessage(
       originalUrl,
       monetizedUrl: finalMonetizedUrl,
       marketplace: marketplace || 'Mercado Livre',
-      methodUsed: methodUsed || `Multi-Destino (${sendResults.join(' | ')})`,
+      methodUsed: methodUsed || `Origem: ${sourcePlatform} -> Destinos: ${allTargets.join(', ')}`,
       status: atLeastOneSent ? 'success' : 'error',
       errorMessage: atLeastOneSent ? undefined : sendResults.join(' | '),
     });
 
     console.log(
-      `[Replica Zap] 🚀 SUCESSO: Oferta clonada e distribuída para ${allTargets.length} destino(s): [${allTargets.join(', ')}] (Foto: ${imageSource})!`
+      `[Replica Pipeline] 🚀 SUCESSO: Mensagem capturada de [${sourceDisplayTitle}] e entregue para [${allTargets.join(', ')}] (Foto: ${imageSource})!`
     );
 
-    console.log(
-      `[Replica Zap Automático] 🚀 Oferta clonada e enviada com sucesso para "${targetSubject}" com imagem: ${!!imageBuffer}!`
-    );
+    return {
+      success: atLeastOneSent,
+      sendResults,
+      message: atLeastOneSent
+        ? `Entregue com sucesso para: ${sendResults.join(', ')}`
+        : `Falha ao enviar: ${sendResults.join(', ')}`,
+    };
   } catch (err: any) {
-    console.error('[Replica Zap Automático] Erro no processamento e envio:', err);
+    console.error('[Replica Pipeline] Erro crítico na replicação:', err);
+    return { success: false, sendResults: [], message: err?.message || 'Erro interno' };
   }
 }
+
+/**
+ * Handles incoming messages from Telegram channels and groups,
+ * automatically routing them to WhatsApp groups according to configured Source rules!
+ */
+export async function handleIncomingTelegramMessage(params: {
+  rawText: string;
+  imageBuffer?: Buffer | null;
+  chatId: string;
+  chatTitle: string;
+  chatUsername?: string;
+  messageId?: number;
+}): Promise<{ success: boolean; ruleMatched?: string; targetsSent?: string[]; error?: string; message?: string }> {
+  try {
+    const rawCaption = (params.rawText || '').trim();
+    if (!rawCaption && !params.imageBuffer) {
+      return { success: false, error: 'Mensagem vazia do Telegram.' };
+    }
+
+    const allAvailable = getActiveSourceRules();
+    const activeRules = allAvailable.filter((r) => r.status === 'monitoring' && r.autoForward);
+    const candidateRules = activeRules.length > 0 ? activeRules : allAvailable;
+
+    if (candidateRules.length === 0) {
+      console.log('[Telegram -> WhatsApp] ℹ️ Nenhuma regra cadastrada nas Fontes.');
+      return { success: false, error: 'Nenhuma regra cadastrada nas Fontes.' };
+    }
+
+    const cleanChatTitle = (params.chatTitle || '').replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
+    const cleanUsername = (params.chatUsername || '').replace(/^@/, '').trim().toLowerCase();
+    const cleanId = String(params.chatId || '').trim().toLowerCase();
+
+    // Match rule configured for this Telegram source
+    let matchedRule = candidateRules.find((r) => {
+      // 1. Direct chatId or username match
+      if (r.sourceJid && (r.sourceJid === cleanId || r.sourceJid.toLowerCase() === `@${cleanUsername}`)) return true;
+      if (r.sourceJids && (r.sourceJids.includes(cleanId) || r.sourceJids.some((j) => j.toLowerCase() === `@${cleanUsername}`))) return true;
+
+      // 2. Name matching across sourceNames
+      const candidates = [
+        r.sourceName,
+        ...(Array.isArray(r.sourceNames) ? r.sourceNames : []),
+      ].flatMap((s) => (s ? s.split(',') : [])).map((s) => s.trim()).filter(Boolean);
+
+      for (const src of candidates) {
+        const cleanSrc = src
+          .replace(/^\[FONTE\]\s*/i, '')
+          .replace(/^\[Telegram\]\s*/i, '')
+          .replace(/^\[WhatsApp\]\s*/i, '')
+          .replace(/^@/, '')
+          .replace(/[^\p{L}\p{N}]/gu, '')
+          .trim()
+          .toLowerCase();
+
+        if (!cleanSrc) continue;
+
+        if (
+          (cleanChatTitle && (cleanChatTitle === cleanSrc || cleanChatTitle.includes(cleanSrc) || cleanSrc.includes(cleanChatTitle))) ||
+          (cleanUsername && (cleanUsername === cleanSrc || cleanUsername.includes(cleanSrc) || cleanSrc.includes(cleanUsername))) ||
+          cleanId === cleanSrc
+        ) {
+          if (!r.sourceJid) r.sourceJid = cleanId;
+          if (!r.sourceJids) r.sourceJids = [];
+          if (!r.sourceJids.includes(cleanId)) r.sourceJids.push(cleanId);
+          setActiveSourceRules(getActiveSourceRules());
+          return true;
+        }
+      }
+
+      return false;
+    });
+
+    // Fallback: If only 1 rule exists and involves Telegram or is the only rule, match it!
+    if (!matchedRule && candidateRules.length === 1) {
+      const single = candidateRules[0];
+      const isTg =
+        single.platform === 'Telegram' ||
+        single.platform === 'Misto' ||
+        single.sourcePlatforms?.includes('Telegram') ||
+        single.sourceName.toLowerCase().includes('telegram') ||
+        single.sourceName.includes('@');
+
+      if (isTg) {
+        matchedRule = single;
+        console.log(`[Telegram -> WhatsApp] 🎯 Regra única com Telegram combinada automaticamente: "${matchedRule.sourceName}"`);
+      }
+    }
+
+    if (!matchedRule) {
+      console.log(`[Telegram -> WhatsApp] ℹ️ Mensagem recebida de "${params.chatTitle}" (${params.chatId}), mas não há regra fonte configurada com esse canal/grupo.`);
+      return { success: false, error: `Nenhuma regra configurada para a fonte do Telegram: ${params.chatTitle || params.chatId}` };
+    }
+
+    console.log(`[Telegram -> WhatsApp] 🚀 Mensagem capturada de "${params.chatTitle}"! Replicando para regra "${matchedRule.sourceName}" -> Destinos: "${matchedRule.targetGroup}"...`);
+
+    const result = await executeReplicaPipeline({
+      matchedRule,
+      rawCaption,
+      imageBuffer: params.imageBuffer || null,
+      sourceDisplayTitle: `[Telegram] ${params.chatTitle || params.chatUsername || params.chatId}`,
+      sourcePlatform: 'Telegram',
+    });
+
+    return {
+      success: result.success,
+      ruleMatched: matchedRule.sourceName,
+      targetsSent: result.sendResults,
+      message: result.message,
+    };
+  } catch (err: any) {
+    console.error('[Telegram -> WhatsApp] Erro ao replicar mensagem:', err);
+    return { success: false, error: err?.message || 'Erro interno na replicação Telegram -> WhatsApp.' };
+  }
+}
+
+// Register the incoming handler with the Telegram service
+registerTelegramIncomingHandler(handleIncomingTelegramMessage);
 
 /**
  * Allows manual or test dispatches to any destination group with optional image buffer or URL
@@ -1486,122 +1731,6 @@ export async function dispatchPendingMeliOffer(
     console.error('Erro ao disparar oferta pendente:', err);
     return { success: false, message: err?.message || 'Falha ao enviar ao WhatsApp.' };
   }
-}
-
-/**
- * Executa a Varredura Inteligente (Sweep) selecionando todos os produtos
- * e ofertas capturadas dos grupos fonte que ainda não foram enviados e enviando-os.
- */
-export async function triggerFullSourceSweep(): Promise<{
-  success: boolean;
-  message: string;
-  scannedRulesCount: number;
-  productsFoundCount: number;
-  forwardedCount: number;
-  items: any[];
-}> {
-  console.log('[Sweep Motor] 🔍 Iniciando Varredura de Produtos nos Grupos Fonte...');
-  const activeRules = getActiveSourceRules().filter((r) => r.status === 'monitoring');
-  const pendingQueue = getPendingMeliQueue();
-  const existingLogs = getReplicaLogs();
-
-  let forwardedCount = 0;
-  const processedItems: any[] = [];
-
-  // 1. Process all pending queue offers (Mercado Livre deals waiting for approval or queue)
-  if (pendingQueue.length > 0) {
-    console.log(`[Sweep Motor] 📦 Encontrados ${pendingQueue.length} produtos em fila pendente. Disparando varredura...`);
-    for (const pendingItem of [...pendingQueue]) {
-      const res = await dispatchPendingMeliOffer(pendingItem.id, pendingItem.pureProductUrl);
-      if (res.success) {
-        forwardedCount++;
-        processedItems.push({
-          id: pendingItem.id,
-          title: pendingItem.rawCaption.slice(0, 80) || 'Oferta em Destaque',
-          marketplace: 'Mercado Livre',
-          sourceGroup: pendingItem.sourceGroupName,
-          targetGroup: pendingItem.targetGroupName,
-          originalUrl: pendingItem.pureProductUrl,
-          monetizedUrl: pendingItem.pureProductUrl,
-          status: 'Enviado',
-          timestamp: new Date().toLocaleTimeString('pt-BR'),
-        });
-      }
-    }
-  }
-
-  // 2. Scan recent messages stored in messageHistory for any unforwarded offers from active source groups
-  const keys = messageHistory.keys();
-  console.log(`[Sweep Motor] 📜 Analisando ${keys.length} mensagens recentes em memória...`);
-
-  for (const keyId of keys) {
-    const rawMsg: any = messageHistory.get(keyId);
-    if (!rawMsg || !rawMsg.key || !rawMsg.message) continue;
-
-    const remoteJid = rawMsg.key.remoteJid;
-    if (!remoteJid) continue;
-
-    // Match against active source rules
-    const matchedRules = activeRules.filter((rule) => {
-      const sources = rule.sourceJids && rule.sourceJids.length > 0 ? rule.sourceJids : [rule.sourceJid || ''];
-      const names = rule.sourceNames && rule.sourceNames.length > 0 ? rule.sourceNames : [rule.sourceName || ''];
-      return sources.includes(remoteJid) || names.some((n) => remoteJid.includes(n));
-    });
-
-    if (matchedRules.length > 0) {
-      // Check if this message was already logged as forwarded
-      const isAlreadyForwarded = existingLogs.some(
-        (log: any) => log.originalText && rawMsg.message?.conversation?.includes(log.originalText.slice(0, 30))
-      );
-
-      if (!isAlreadyForwarded) {
-        // Trigger forward processing for this message
-        try {
-          const downloadContent = (await import('@whiskeysockets/baileys')).downloadContentFromMessage;
-          await handleAutomaticReplicaMessage(rawMsg, remoteJid, currentSocket, downloadContent);
-          forwardedCount++;
-          processedItems.push({
-            id: keyId,
-            title: rawMsg.message?.conversation?.slice(0, 80) || 'Produto Varredura',
-            marketplace: 'E-commerce',
-            sourceGroup: matchedRules[0]?.sourceName || 'Grupo Fonte',
-            targetGroup: matchedRules[0]?.targetGroup || 'Grupo Destino',
-            status: 'Enviado',
-            timestamp: new Date().toLocaleTimeString('pt-BR'),
-          });
-        } catch (e) {
-          console.warn('[Sweep Motor] Erro ao processar mensagem na varredura:', e);
-        }
-      }
-    }
-  }
-
-  // 3. Return summary of items
-  const allLogs = getReplicaLogs();
-  const summaryItems = processedItems.length > 0 ? processedItems : allLogs.slice(0, 50).map((l: any) => ({
-    id: l.id,
-    title: l.originalText ? l.originalText.slice(0, 90) : 'Oferta de Produto',
-    marketplace: l.marketplace || 'Mercado Livre',
-    sourceGroup: l.sourceGroupName,
-    targetGroup: l.targetGroupName,
-    originalUrl: l.originalUrl,
-    monetizedUrl: l.monetizedUrl,
-    status: l.status === 'success' ? 'Enviado' : 'Pendente',
-    timestamp: l.timestamp,
-  }));
-
-  console.log(`[Sweep Motor] ✅ Varredura finalizada. ${forwardedCount} novos produtos enviados.`);
-
-  return {
-    success: true,
-    message: forwardedCount > 0
-      ? `Varredura concluída! ${forwardedCount} produtos foram selecionados e enviados para os grupos de destino.`
-      : `Varredura concluída! Todos os produtos dos grupos fonte foram analisados e sincronizados com sucesso.`,
-    scannedRulesCount: activeRules.length,
-    productsFoundCount: summaryItems.length,
-    forwardedCount,
-    items: summaryItems,
-  };
 }
 
 

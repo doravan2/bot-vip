@@ -152,6 +152,67 @@ def extract_magalu_canonical(final_url, html):
         return clean_url(p_match.group(0))
     return clean_url(final_url.split('?')[0])
 
+def is_invalid_or_error_url(url):
+    if not url:
+        return True
+    u_lower = url.lower()
+    return any(p in u_lower for p in [
+        '/s/error/404',
+        '/error/404',
+        '/s/error',
+        'coin-index',
+        '/p/coin',
+        'error.mercadolivre',
+        'aliexpress.com/s/error'
+    ])
+
+def extract_aliexpress_canonical(final_url, html, original_url=""):
+    # 1. Check if original_url or final_url contains targetUrl or dl_target_url
+    for candidate in [original_url, final_url]:
+        if 'targetUrl=' in candidate or 'dl_target_url=' in candidate or 'target_url=' in candidate:
+            try:
+                parsed = urllib.parse.urlparse(candidate)
+                qs = urllib.parse.parse_qs(parsed.query)
+                for key in ['targetUrl', 'dl_target_url', 'target_url']:
+                    if key in qs and qs[key]:
+                        unquoted = urllib.parse.unquote(qs[key][0])
+                        item_m = re.search(r'item/(\d+)\.html', unquoted) or re.search(r'/i/(\d+)\.html', unquoted)
+                        if item_m:
+                            return f"https://pt.aliexpress.com/item/{item_m.group(1)}.html"
+            except Exception:
+                pass
+
+    # 2. Check if final_url contains an item ID
+    final_item = re.search(r'item/(\d+)\.html', final_url) or re.search(r'/i/(\d+)\.html', final_url)
+    if final_item:
+        return f"https://pt.aliexpress.com/item/{final_item.group(1)}.html"
+
+    # 3. Check HTML for canonical link or og:url with item ID
+    html_item = re.search(r'<meta\s+(?:property|name)=["\']og:url["\']\s+content=["\']([^"\']*item/\d+\.html[^"\']*)["\']', html, re.I)
+    if not html_item:
+        html_item = re.search(r'<link\s+rel=["\']canonical["\']\s+href=["\']([^"\']*item/\d+\.html[^"\']*)["\']', html, re.I)
+    if html_item:
+        og_url = html_item.group(1).strip()
+        m = re.search(r'item/(\d+)\.html', og_url)
+        if m:
+            return f"https://pt.aliexpress.com/item/{m.group(1)}.html"
+
+    # 4. Check HTML for embedded productId or itemId
+    id_match = re.search(r'["\']productId["\']\s*:\s*["\']?(\d{10,20})["\']?', html) or re.search(r'["\']itemId["\']\s*:\s*["\']?(\d{10,20})["\']?', html)
+    if id_match:
+        return f"https://pt.aliexpress.com/item/{id_match.group(1)}.html"
+
+    # 5. Check if original_url had an item ID
+    orig_item = re.search(r'item/(\d+)\.html', original_url) or re.search(r'/i/(\d+)\.html', original_url)
+    if orig_item:
+        return f"https://pt.aliexpress.com/item/{orig_item.group(1)}.html"
+
+    # If the URL is an error, 404, or coin-index page, NEVER return it as canonical!
+    if is_invalid_or_error_url(final_url):
+        return ""
+
+    return clean_url(final_url.split('?')[0])
+
 def resolve_url_headless(url):
     original_url = url.strip()
     lower_orig = original_url.lower()
@@ -166,6 +227,20 @@ def resolve_url_headless(url):
             'canonicalLongUrl': clean_mlb,
             'marketplace': 'mercadolivre'
         }
+
+    # If already a direct AliExpress item URL, fast-path it
+    if ('aliexpress.com/item/' in lower_orig or 'aliexpress.com/i/' in lower_orig) and 's.click' not in lower_orig and 'a.aliexpress' not in lower_orig:
+        clean_ali = clean_url(original_url.split('?')[0])
+        item_m = re.search(r'item/(\d+)\.html', clean_ali)
+        if item_m:
+            canon = f"https://pt.aliexpress.com/item/{item_m.group(1)}.html"
+            return {
+                'success': True,
+                'originalUrl': original_url,
+                'finalUrl': canon,
+                'canonicalLongUrl': canon,
+                'marketplace': 'aliexpress'
+            }
 
     session = HeadlessBrowserSession()
 
@@ -194,6 +269,9 @@ def resolve_url_headless(url):
     elif 'shopee.com' in lower_url or 'shope.ee' in lower_url or 's.shopee.com' in lower_url:
         marketplace = 'shopee'
         canonical = extract_shopee_canonical(final_url, html)
+    elif 'aliexpress.com' in lower_url or 's.click.aliexpress' in lower_url or 'a.aliexpress.com' in lower_url or 'ali.ski' in lower_url:
+        marketplace = 'aliexpress'
+        canonical = extract_aliexpress_canonical(final_url, html, original_url)
     elif 'magazineluiza.com' in lower_url or 'magazinevoce.com' in lower_url or 'magalu.me' in lower_url:
         marketplace = 'magalu'
         canonical = extract_magalu_canonical(final_url, html)
@@ -201,11 +279,28 @@ def resolve_url_headless(url):
         marketplace = 'generic'
         canonical = clean_url(final_url.split('?')[0])
 
+    # Safety check: if canonical or final_url is an error page or 404, reject as invalid
+    effective_canonical = canonical or final_url
+    if is_invalid_or_error_url(effective_canonical):
+        # Check if original_url had any product ID
+        item_m = re.search(r'item/(\d+)\.html', original_url) or re.search(r'/p/MLB[-]?\d+', original_url)
+        if item_m and 'aliexpress' in lower_url:
+            effective_canonical = f"https://pt.aliexpress.com/item/{item_m.group(1)}.html"
+        else:
+            return {
+                'success': False,
+                'originalUrl': original_url,
+                'finalUrl': final_url,
+                'canonicalLongUrl': "",
+                'marketplace': marketplace,
+                'error': f'URL resolvida para página de erro/404 ({final_url})'
+            }
+
     return {
         'success': True,
         'originalUrl': original_url,
         'finalUrl': final_url,
-        'canonicalLongUrl': canonical or final_url,
+        'canonicalLongUrl': effective_canonical,
         'marketplace': marketplace
     }
 
