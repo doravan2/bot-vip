@@ -9,8 +9,8 @@ import {
   addReplicaLog,
   getReplicaLogs,
   cleanAndMonetizeCompetitorMessage,
-  ActiveSourceRule,
 } from './replicaForwarder.ts';
+import type { ActiveSourceRule } from './replicaForwarder.ts';
 import {
   OFFICIAL_USER_AFFILIATE_ID,
   DEFAULT_VIP_GROUP_LINK,
@@ -25,8 +25,8 @@ import {
   removePendingMeliItem,
   setCustomMeliLink,
   getVipGroupLink,
-  PendingMeliItem,
 } from './affiliateConfig.ts';
+import type { PendingMeliItem } from './affiliateConfig.ts';
 import { recordConversionLog } from './conversionLogger.ts';
 import { convertMeliLinkViaCookies, getMarketplacesConfig } from './marketplacesService.ts';
 import { fetchProductImageBuffer } from './productImageService.ts';
@@ -252,31 +252,26 @@ export async function getRealWhatsAppGroups(): Promise<RealGroupInfo[]> {
 
 /**
  * Obter Canais (Newsletters) do WhatsApp vinculados à conta conectada (@newsletter)
- * Utiliza Raw Query de baixo nível direto aos servidores da Meta (IQ Newsletter) + fallbacks
  */
 export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
   if (!currentSocket || !state.isConnected) {
-    console.warn('[Baileys] Socket não conectado. Impossível buscar canais.');
+    console.log('[Baileys Newsletter] Socket não conectado ou indisponível.');
     return [];
   }
 
   const channelsResult: RealGroupInfo[] = [];
   const processedJids = new Set<string>();
 
-  // Helper para adicionar canal sem duplicatas e padronizar
+  // Helper para adicionar canal sem duplicatas
   const addChannel = (jid: string, rawName?: string, subscribersCount?: number) => {
-    if (!jid) return;
-    let cleanJid = jid;
-    if (!cleanJid.includes('@')) cleanJid = `${cleanJid}@newsletter`;
-    if (cleanJid.includes('@g.us')) cleanJid = cleanJid.replace('@g.us', '@newsletter');
-    if (!cleanJid.endsWith('@newsletter') || processedJids.has(cleanJid)) return;
+    if (!jid || !jid.endsWith('@newsletter') || processedJids.has(jid)) return;
+    processedJids.add(jid);
 
-    processedJids.add(cleanJid);
-    const name = rawName && rawName.trim() && rawName !== 'undefined' ? rawName.trim() : 'Canal do WhatsApp';
-    cachedParticipatingGroups.set(cleanJid, name);
+    const name = rawName && rawName.trim() ? rawName.trim() : 'Canal do WhatsApp';
+    cachedParticipatingGroups.set(jid, name);
 
     channelsResult.push({
-      id: cleanJid,
+      id: jid,
       name,
       membersCount: subscribersCount || 1000,
       maxCapacity: 1000000,
@@ -284,66 +279,22 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
     });
   };
 
-  console.log('--- FORÇANDO BUSCA DE CANAIS (RAW QUERY) ---');
-
-  // 1. RAW QUERY de baixo nível direto aos servidores do WhatsApp
-  try {
-    const result = await currentSocket.query({
-      tag: 'iq',
-      attrs: {
-        type: 'get',
-        xmlns: 'newsletter',
-        to: '@s.whatsapp.net',
-      },
-      content: [
-        { tag: 'subscriptions', attrs: {} }
-      ]
-    });
-
-    console.log('[Baileys-Raw] Resposta bruta recebida da Meta!');
-
-    if (result && result.content && Array.isArray(result.content)) {
-      const subscriptions = result.content.find((c: any) => c.tag === 'subscriptions');
-
-      if (subscriptions && subscriptions.content && Array.isArray(subscriptions.content)) {
-        for (const node of subscriptions.content) {
-          if (node.tag === 'newsletter') {
-            let id = node.attrs?.id || node.attrs?.jid;
-            let name = 'Canal Desconhecido';
-
-            if (node.content && Array.isArray(node.content)) {
-              const nameNode = node.content.find((c: any) => c.tag === 'name' || c.tag === 'subject');
-              if (nameNode && nameNode.content) {
-                if (Buffer.isBuffer(nameNode.content)) {
-                  name = nameNode.content.toString('utf-8');
-                } else if (typeof nameNode.content === 'string') {
-                  name = nameNode.content;
-                } else if (Array.isArray(nameNode.content)) {
-                  name = nameNode.content.map((item: any) => item?.content || item).join('');
-                } else {
-                  name = String(nameNode.content);
-                }
-              }
-            }
-
-            if (id) {
-              addChannel(id, name);
-            }
-          }
-        }
-      }
-    }
-    console.log(`[Baileys-Raw] SUCESSO! Encontrados ${channelsResult.length} canais via Raw Query!`);
-  } catch (error: any) {
-    console.error('[Baileys-Erro] Falha na Raw Query de Canais:', error?.message || error);
-  }
-
-  // 2. FETCH ATIVO COMPLEMENTAR: sock.newsletterSubscribed()
+  // 1. FETCH ATIVO: Tentar buscar diretamente nos servidores do WhatsApp via newsletterSubscribed()
+  let fetchSucceeded = false;
   if (typeof (currentSocket as any).newsletterSubscribed === 'function') {
     try {
+      console.log('[Baileys Newsletter] Executando fetch ativo via sock.newsletterSubscribed()...');
       const rawNewsletters = await (currentSocket as any).newsletterSubscribed();
+      
+      console.log(
+        '[Baileys Newsletter Debug] Payload bruto retornado do WhatsApp:',
+        JSON.stringify(rawNewsletters, null, 2)
+      );
+
       if (Array.isArray(rawNewsletters)) {
+        fetchSucceeded = true;
         for (const nl of rawNewsletters) {
+          // Extrai o JID e Nome considerando estruturas de viewer_metadata, thread_metadata ou campos raiz
           const jid = nl?.id || nl?.jid || nl?.newsletterJid || nl?.key?.remoteJid;
           const name =
             nl?.name ||
@@ -351,11 +302,14 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
             nl?.thread_metadata?.name?.text ||
             nl?.thread_meta?.name?.text ||
             nl?.viewer_metadata?.title ||
-            nl?.viewer_meta?.title;
+            nl?.viewer_meta?.title ||
+            'Canal do WhatsApp';
+
           const subscribers =
             nl?.subscribers ||
             nl?.subscribers_count ||
-            nl?.thread_metadata?.subscribers_count;
+            nl?.thread_metadata?.subscribers_count ||
+            1000;
 
           if (jid) {
             addChannel(jid, name, Number(subscribers));
@@ -363,12 +317,16 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
         }
       }
     } catch (err: any) {
-      console.warn('[Baileys Newsletter] Erro complementar ao chamar newsletterSubscribed():', err?.message || err);
+      console.warn('[Baileys Newsletter] Erro ao chamar newsletterSubscribed():', err?.message || err);
     }
+  } else {
+    console.log('[Baileys Newsletter] O método sock.newsletterSubscribed() não está disponível nesta versão do Baileys.');
   }
 
-  // 3. FALLBACK DE PROTOCOLO: Caches locais de chats
+  // 2. FALLBACK DE PROTOCOLO: Se o fetch ativo não retornou ou não estava disponível, consultar os caches em memória
+  console.log(`[Baileys Newsletter] Executando fallback em cache de chats (Canais encontrados até agora: ${channelsResult.length})...`);
   try {
+    // A. Cache de grupos/chats local do service
     const groupsMap = await refreshGroupCache(currentSocket);
     for (const [id, name] of groupsMap.entries()) {
       if (id.endsWith('@newsletter')) {
@@ -376,6 +334,7 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
       }
     }
 
+    // B. Inspection de (currentSocket as any).chats se disponível
     const socketChats = (currentSocket as any)?.chats;
     if (socketChats && typeof socketChats === 'object') {
       const chatEntries = Array.isArray(socketChats) ? socketChats : Object.values(socketChats);
@@ -388,7 +347,7 @@ export async function getWhatsAppChannels(): Promise<RealGroupInfo[]> {
       }
     }
   } catch (fallbackErr: any) {
-    console.warn('[Baileys Newsletter] Exceção no fallback de chats:', fallbackErr?.message || fallbackErr);
+    console.warn('[Baileys Newsletter] Exceção durante o fallback de chats:', fallbackErr?.message || fallbackErr);
   }
 
   console.log(`[Baileys Newsletter] Total final de canais sincronizados: ${channelsResult.length}`);
@@ -846,23 +805,32 @@ async function handleAutomaticReplicaMessage(
       return false;
     });
 
-    // Fallback: If there is only 1 active rule and the message comes from a WhatsApp group that is NOT the target group, match it!
-    if (!matchedRule && rules.length === 1) {
-      const singleRule = rules[0];
-      const isTarget = singleRule.targetJid === remoteJid ||
-        (singleRule.targetGroup && groupSubject.toLowerCase().includes(singleRule.targetGroup.toLowerCase()));
-      if (!isTarget) {
-        matchedRule = singleRule;
-        matchedRule.sourceJid = remoteJid;
-        if (!matchedRule.sourceJids) matchedRule.sourceJids = [];
-        if (!matchedRule.sourceJids.includes(remoteJid)) matchedRule.sourceJids.push(remoteJid);
-        setActiveSourceRules(getActiveSourceRules());
-        console.log(`[Replica Zap] 🎯 Regra única combinada automaticamente com o grupo fonte (${groupSubject || remoteJid})!`);
+    // Fallback Universal: Se não casou com uma regra específica por nome, mas o robô recebeu uma mensagem em QUALQUER grupo:
+    if (!matchedRule && rules.length > 0) {
+      // Encontra uma regra cujo destino NÃO seja o grupo de onde a mensagem veio
+      const availableRule = rules.find((r) => {
+        const isSelfTarget =
+          r.targetJid === remoteJid ||
+          (Array.isArray(r.targetJids) && r.targetJids.includes(remoteJid)) ||
+          (r.targetGroup && groupSubject && groupSubject.toLowerCase().includes(r.targetGroup.toLowerCase()));
+        return !isSelfTarget;
+      }) || rules[0];
+
+      if (availableRule) {
+        const isSelfTarget =
+          availableRule.targetJid === remoteJid ||
+          (Array.isArray(availableRule.targetJids) && availableRule.targetJids.includes(remoteJid)) ||
+          (availableRule.targetGroup && groupSubject && groupSubject.toLowerCase().includes(availableRule.targetGroup.toLowerCase()));
+
+        if (!isSelfTarget) {
+          matchedRule = availableRule;
+          console.log(`[Replica Zap Universal] 🌐 Mensagem de "${groupSubject || remoteJid}" combinada automaticamente com a regra de envio: "${matchedRule.targetGroup}"!`);
+        }
       }
     }
 
     if (!matchedRule) {
-      console.log(`[Listener WhatsApp] ℹ️ Mensagem ignorada: grupo "${groupSubject || remoteJid}" não é uma fonte monitorada ativa.`);
+      console.log(`[Listener WhatsApp] ℹ️ Mensagem em "${groupSubject || remoteJid}" não processada (é o próprio grupo de destino ou sem regras ativas).`);
       return;
     }
 
@@ -917,15 +885,29 @@ async function handleAutomaticReplicaMessage(
  * to ALL target groups/channels (WhatsApp groups and Telegram channels).
  */
 export async function executeReplicaPipeline(params: {
-  matchedRule: ActiveSourceRule;
+  matchedRule?: ActiveSourceRule;
   rawCaption: string;
   imageBuffer: Buffer | null;
   sourceDisplayTitle: string;
   sourcePlatform: 'WhatsApp' | 'Telegram';
   remoteJid?: string;
 }): Promise<{ success: boolean; sendResults: string[]; message?: string }> {
-  const { matchedRule, rawCaption, sourceDisplayTitle, sourcePlatform, remoteJid } = params;
+  const { rawCaption, sourceDisplayTitle, sourcePlatform, remoteJid } = params;
   let imageBuffer = params.imageBuffer;
+
+  const matchedRule: ActiveSourceRule = params.matchedRule || {
+    id: `rule-auto-${Date.now()}`,
+    sourceName: sourceDisplayTitle || 'Grupo Fonte',
+    targetGroup: 'teste 2',
+    targetGroups: ['teste 2'],
+    autoForward: true,
+    filterCompetitorNames: true,
+    autoFetchProductImage: true,
+    validateMeliStock: true,
+    status: 'monitoring',
+    dealsCapturedToday: 0,
+    createdAt: 'Agora',
+  };
 
   try {
     // =========================================================================
@@ -1120,30 +1102,33 @@ export async function executeReplicaPipeline(params: {
     }
 
     // =========================================================
-    // 4.1 APLICAR FILTRO DE CHAT (Remover frases, chamadas e linhas indesejadas)
+    // 4.1 APLICAR FILTRO DE CHAT (Remover frases, chamadas e linhas indesejadas da FONTE)
     // =========================================================
     finalCleanedCopy = applyChatFilter(
       finalCleanedCopy,
       sourceDisplayTitle,
       matchedRule.sourceName,
-      matchedRule.targetGroup,
-      ...(Array.isArray(matchedRule.targetGroups) ? matchedRule.targetGroups : [])
+      remoteJid,
+      matchedRule.sourceJid,
+      ...(Array.isArray(matchedRule.sourceNames) ? matchedRule.sourceNames : []),
+      ...(Array.isArray(matchedRule.sourceJids) ? matchedRule.sourceJids : [])
     );
 
     // =========================================================
-    // =========================================================
-    // 5. REGRA DE IMAGEM & FILTRO ANTI-MARCA D'ÁGUA (Substituir por Foto Limpa HD Oficial)
+    // 5. REGRA DE IMAGEM & FILTRO ANTI-MARCA D'ÁGUA (Substituir por Foto Limpa HD Oficial da FONTE)
     // =========================================================
     let imageSource: 'source-media' | 'auto-link-photo' | 'none' = imageBuffer ? 'source-media' : 'none';
 
-    // Checa se o Filtro Anti-Marca d'Água está ativo especificamente para este grupo de atuação
-    const isFilterActiveForThisGroup =
+    // Checa se o Filtro Anti-Marca d'Água está ativo especificamente para o GRUPO FONTE (Origem/Concorrente)
+    const isFilterActiveForThisSourceGroup =
       isWatermarkActiveForGroup(sourceDisplayTitle) ||
       isWatermarkActiveForGroup(matchedRule.sourceName || '') ||
-      isWatermarkActiveForGroup(matchedRule.targetGroup || '') ||
-      (Array.isArray(matchedRule.targetGroups) && matchedRule.targetGroups.some((g) => isWatermarkActiveForGroup(g)));
+      (remoteJid ? isWatermarkActiveForGroup(remoteJid) : false) ||
+      (matchedRule.sourceJid ? isWatermarkActiveForGroup(matchedRule.sourceJid) : false) ||
+      (Array.isArray(matchedRule.sourceNames) && matchedRule.sourceNames.some((s) => isWatermarkActiveForGroup(s))) ||
+      (Array.isArray(matchedRule.sourceJids) && matchedRule.sourceJids.some((j) => isWatermarkActiveForGroup(j)));
 
-    if (mensagem_veio_com_foto && imageBuffer && isFilterActiveForThisGroup) {
+    if (mensagem_veio_com_foto && imageBuffer && isFilterActiveForThisSourceGroup) {
       console.log(`[Filtro Anti-Marca d'Água] 🛡️ Filtro ativo para o grupo [${sourceDisplayTitle}]! Buscando Foto Limpa HD Oficial do marketplace...`);
       const candidateUrl = finalMonetizedUrl || pureProductUrl || originalUrl || monetizedUrl;
       let cleanPhotoFound = false;
@@ -1275,26 +1260,33 @@ export async function executeReplicaPipeline(params: {
         continue;
       }
 
-      let thisTargetJid = matchedRule.targetJid;
-      const cleanTgt = tgt.replace(/^\[WhatsApp\]\s*/i, '').replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
+      let thisTargetJid = matchedRule.targetJids?.[i] || matchedRule.targetJid;
+      if (tgt.endsWith('@g.us') || tgt.endsWith('@newsletter')) {
+        thisTargetJid = tgt;
+      }
+      const cleanTgt = tgt.replace(/^\[(WhatsApp|Telegram)\]\s*/i, '').replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
 
       // Buscar JID correspondente nos grupos participando
-      for (const [jid, subj] of cachedParticipatingGroups.entries()) {
-        const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-        if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
-          thisTargetJid = jid;
-          break;
+      if (!thisTargetJid || (!thisTargetJid.endsWith('@g.us') && !thisTargetJid.endsWith('@newsletter'))) {
+        for (const [jid, subj] of cachedParticipatingGroups.entries()) {
+          const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
+          if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
+            thisTargetJid = jid;
+            break;
+          }
         }
       }
 
       // Fallback: atualizar cache de grupos
-      if (!thisTargetJid) {
+      if (!thisTargetJid || (!thisTargetJid.endsWith('@g.us') && !thisTargetJid.endsWith('@newsletter'))) {
         try {
           const freshMap = await refreshGroupCache(sendSock, true);
           for (const [jid, subj] of freshMap.entries()) {
             const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
             if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
               thisTargetJid = jid;
+              if (!matchedRule.targetJids) matchedRule.targetJids = [];
+              matchedRule.targetJids[i] = jid;
               matchedRule.targetJid = jid;
               setActiveSourceRules(getActiveSourceRules());
               break;
@@ -1303,7 +1295,7 @@ export async function executeReplicaPipeline(params: {
         } catch {}
       }
 
-      // Se ainda não encontrou, usa qualquer grupo de destino conectado
+      // Se ainda não encontrou, usa qualquer grupo conectado diferente da origem
       if (!thisTargetJid && cachedParticipatingGroups.size > 0) {
         for (const [jid] of cachedParticipatingGroups.entries()) {
           if (!remoteJid || jid !== remoteJid) {
@@ -1452,25 +1444,15 @@ export async function handleIncomingTelegramMessage(params: {
       return false;
     });
 
-    // Fallback: If only 1 rule exists and involves Telegram or is the only rule, match it!
-    if (!matchedRule && candidateRules.length === 1) {
-      const single = candidateRules[0];
-      const isTg =
-        single.platform === 'Telegram' ||
-        single.platform === 'Misto' ||
-        single.sourcePlatforms?.includes('Telegram') ||
-        single.sourceName.toLowerCase().includes('telegram') ||
-        single.sourceName.includes('@');
-
-      if (isTg) {
-        matchedRule = single;
-        console.log(`[Telegram -> WhatsApp] 🎯 Regra única com Telegram combinada automaticamente: "${matchedRule.sourceName}"`);
-      }
+    // Fallback Universal Telegram: Se não casou com um canal específico por nome, mas o robô recebeu uma mensagem de canal:
+    if (!matchedRule && candidateRules.length > 0) {
+      matchedRule = candidateRules[0];
+      console.log(`[Telegram -> WhatsApp Universal] 🌐 Mensagem do Telegram (${params.chatTitle || params.chatId}) associada à regra "${matchedRule.sourceName}" -> Destinos: "${matchedRule.targetGroup}"!`);
     }
 
     if (!matchedRule) {
-      console.log(`[Telegram -> WhatsApp] ℹ️ Mensagem recebida de "${params.chatTitle}" (${params.chatId}), mas não há regra fonte configurada com esse canal/grupo.`);
-      return { success: false, error: `Nenhuma regra configurada para a fonte do Telegram: ${params.chatTitle || params.chatId}` };
+      console.log(`[Telegram -> WhatsApp] ℹ️ Mensagem recebida de "${params.chatTitle}" (${params.chatId}), mas não há regras ativas.`);
+      return { success: false, error: `Nenhuma regra ativa configurada.` };
     }
 
     console.log(`[Telegram -> WhatsApp] 🚀 Mensagem capturada de "${params.chatTitle}"! Replicando para regra "${matchedRule.sourceName}" -> Destinos: "${matchedRule.targetGroup}"...`);

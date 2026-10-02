@@ -15,7 +15,7 @@ const CONFIG_PATH = path.resolve(process.cwd(), '.whatsapp_auth', 'chat_filter_c
 const DEFAULT_CONFIG: ChatFilterConfig = {
   enabled: true,
   appliedGroups: [],
-  allGroupsActive: false,
+  allGroupsActive: true,
   removeAsteriskHeaders: true,
   removeUnitPriceHooks: true,
   excludedPhrases: ['*SÓ R$11,66 CADA 😱*'],
@@ -74,10 +74,23 @@ function normalizeText(str: string): string {
 }
 
 /**
- * Checa se uma linha começa e termina com asterisco '*' (ex: *exemplo*, *SÓ R$11,66 CADA 😱*, *TEXTO* 🔥)
+ * Normaliza o identificador ou nome de um grupo para match sem ruídos
+ */
+function normalizeGroupName(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/^\[(FONTE|DESTINO|WhatsApp|Telegram)\]\s*/gi, '')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Checa se uma linha é um cabeçalho/chamada delimitada por asteriscos '*' (ex: *exemplo*, *SÓ R$11,66 CADA 😱*, *TEXTO* 🔥)
  */
 export function isAsteriskEnclosedLine(line: string): boolean {
-  const trimmed = line.trim();
+  // Remove caracteres invisíveis, zero-width e quebras de linha Windows (\r)
+  const trimmed = line.replace(/[\u200B-\u200D\uFEFF\r]/g, '').trim();
   if (trimmed.length < 2) return false;
 
   // 1. Exato: começa com * e termina com *
@@ -85,14 +98,20 @@ export function isAsteriskEnclosedLine(line: string): boolean {
     return true;
   }
 
-  // 2. Com emojis/símbolos antes ou depois dos asteriscos, ex: "*exemplo*", "*SÓ R$11,66 CADA 😱*", "*CORRE* 🔥"
-  const cleanLine = trimmed.replace(/^[^\p{L}\p{N}*]+/u, '').replace(/[^\p{L}\p{N}*]+$/u, '');
+  // 2. Com emojis/símbolos antes ou depois dos asteriscos, ex: "*exemplo*", "*SÓ R$11,66 CADA 😱*", "😱 *SÓ R$11,66 CADA*", "*CORRE* 🔥"
+  const cleanLine = trimmed
+    .replace(/^[\s\p{Emoji}\p{Extended_Pictographic}\p{Punctuation}*]*\*/u, '*')
+    .replace(/\*[\s\p{Emoji}\p{Extended_Pictographic}\p{Punctuation}*]*$/u, '*');
+
   if (cleanLine.startsWith('*') && cleanLine.endsWith('*') && cleanLine.length >= 2) {
-    return true;
+    const inner = cleanLine.slice(1, -1);
+    if (!inner.includes('*')) {
+      return true;
+    }
   }
 
-  // 3. Regex para linha envolvida em asteriscos com emojis ao redor
-  if (/^[\p{Extended_Pictographic}\s]*\*+[^*\n]+\*+[\p{Extended_Pictographic}\s]*$/u.test(trimmed)) {
+  // 3. Regex para linha inteira em negrito com possíveis emojis ao redor
+  if (/^[\p{Emoji}\p{Extended_Pictographic}\s]*\*+[^*\n]+\*+[\p{Emoji}\p{Extended_Pictographic}\s]*$/u.test(trimmed)) {
     return true;
   }
 
@@ -100,49 +119,66 @@ export function isAsteriskEnclosedLine(line: string): boolean {
 }
 
 /**
- * Checa se o filtro está ativo para um determinado grupo
+ * Checa se o filtro está ativo para um determinado GRUPO FONTE (origem/concorrente)
  */
-export function isChatFilterActiveForGroup(...groupNames: (string | undefined)[]): boolean {
+export function isChatFilterActiveForGroup(...sourceGroupNamesOrJids: (string | undefined)[]): boolean {
   const config = loadChatFilterConfig();
   if (!config.enabled) return false;
-  if (config.allGroupsActive) return true;
+  if (config.allGroupsActive || !config.appliedGroups || config.appliedGroups.length === 0) return true;
 
-  const validNames = groupNames.filter((n): n is string => !!n && typeof n === 'string');
-  if (validNames.length === 0) return false;
+  const validNames = sourceGroupNamesOrJids.filter((n): n is string => !!n && typeof n === 'string' && n.trim().length > 0);
+  if (validNames.length === 0) return true;
 
   const applied = config.appliedGroups || [];
-  return validNames.some((name) =>
-    applied.some((g) => g.trim().toLowerCase() === name.trim().toLowerCase())
-  );
+  if (applied.length === 0) return true;
+
+  return validNames.some((cand) => {
+    const rawCand = cand.toLowerCase().trim();
+    const normCand = normalizeGroupName(cand);
+
+    return applied.some((g) => {
+      if (!g) return false;
+      const rawG = g.toLowerCase().trim();
+      if (rawCand === rawG) return true;
+      if (rawCand.includes(rawG) || rawG.includes(rawCand)) return true;
+
+      const normG = normalizeGroupName(g);
+      if (normCand && normG && (normCand === normG || normCand.includes(normG) || normG.includes(normCand))) {
+        return true;
+      }
+      return false;
+    });
+  });
 }
 
 /**
  * Aplica o filtro de chat excluindo chamadas e linhas indesejadas
  */
-export function applyChatFilter(text: string, ...groupNames: (string | undefined)[]): string {
+export function applyChatFilter(text: string, ...sourceGroupNamesOrJids: (string | undefined)[]): string {
   if (!text || typeof text !== 'string') return text;
 
   const config = loadChatFilterConfig();
   if (!config.enabled) return text;
 
-  // Verifica escopo dos grupos
+  // Verifica escopo dos grupos fontes
   if (!config.allGroupsActive) {
-    const isTarget = isChatFilterActiveForGroup(...groupNames);
+    const isTarget = isChatFilterActiveForGroup(...sourceGroupNamesOrJids);
     if (!isTarget) {
+      console.log(`[ChatFilter] ℹ️ Filtro inativo para este grupo fonte (${sourceGroupNamesOrJids.filter(Boolean).join(', ')}). Mensagem mantida original.`);
       return text;
     }
   }
 
-  const lines = text.split('\n');
+  const lines = text.split(/\r?\n/);
   const filteredLines: string[] = [];
 
-  // Regex para chamadas de preço por unidade tipo "SÓ R$11,66 CADA"
-  const unitPriceRegex = /^\s*\*?\s*s[óo]\s+r\$\s*[\d.,]+\s*(?:cada|unidade|o\s+par|peça)?.*$/i;
+  // Regex para chamadas de preço por unidade tipo "SÓ R$11,66 CADA" ou "*SÓ R$ 11,66 CADA*"
+  const unitPriceRegex = /^\s*\*?\s*s[óo]\s+r\$\s*[\d.,]+\s*(?:cada|unidade|o\s+par|peça|kit)?.*$/i;
 
   for (const line of lines) {
-    const trimmed = line.trim();
+    const trimmed = line.replace(/[\u200B-\u200D\uFEFF\r]/g, '').trim();
     if (!trimmed) {
-      filteredLines.push(line);
+      filteredLines.push('');
       continue;
     }
 
@@ -165,7 +201,7 @@ export function applyChatFilter(text: string, ...groupNames: (string | undefined
     for (const phrase of config.excludedPhrases || []) {
       if (!phrase || !phrase.trim()) continue;
 
-      const pTrimmed = phrase.trim();
+      const pTrimmed = phrase.replace(/[\u200B-\u200D\uFEFF\r]/g, '').trim();
       const pNormalized = normalizeText(pTrimmed);
 
       // Match exato com ou sem formatação de markdown

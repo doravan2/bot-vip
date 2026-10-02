@@ -1,519 +1,545 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  QrCode,
-  Smartphone,
-  Trash2,
-  Plus,
-  RefreshCw,
-  FolderCode,
-  RotateCcw,
-  Check,
-  Send,
-  Bot,
-  Wifi,
-  Radio,
+  Download,
+  Upload,
+  Copy,
   CheckCircle2,
+  AlertCircle,
+  FileJson,
+  RefreshCw,
+  Sparkles,
+  ShoppingBag,
+  Users2,
+  Megaphone,
+  Radio,
+  Zap,
+  Eye,
+  Check,
+  Code2,
+  FileText,
+  HelpCircle,
 } from 'lucide-react';
-import QRCode from 'qrcode';
-import { WhatsAppInstance } from '../../types/index.ts';
-import {
-  OFFICIAL_USER_AFFILIATE_ID,
-  OFFICIAL_SOURCE,
-  DEFAULT_VIP_GROUP_LINK,
-} from '../../utils/affiliateEngine.ts';
+import { GroupChannel, SourceGroup } from '../../types/index.ts';
 
 interface ConfiguracoesPanelProps {
-  toolId: string;
-  source: string;
-  vipGroupLink: string;
-  onUpdateParams: (toolId: string, source: string, vipLink: string) => void;
-  instances: WhatsAppInstance[];
-  onAddInstance: () => void;
-  onDeleteInstance: (id: string) => void;
-  onUpdateInstance: (id: string, updates: Partial<WhatsAppInstance>) => void;
+  groups?: GroupChannel[];
+  sourceGroups?: SourceGroup[];
+  vipGroupLink?: string;
+  onUpdateVipGroupLink?: (link: string) => void;
+  onImportComplete?: () => void;
 }
 
 export const ConfiguracoesPanel: React.FC<ConfiguracoesPanelProps> = ({
-  toolId,
-  source,
-  vipGroupLink,
-  onUpdateParams,
-  instances,
-  onAddInstance,
-  onDeleteInstance,
-  onUpdateInstance,
+  groups = [],
+  sourceGroups = [],
+  vipGroupLink = '',
+  onUpdateVipGroupLink,
+  onImportComplete,
 }) => {
-  const [localToolId, setLocalToolId] = useState(toolId);
-  const [localSource, setLocalSource] = useState(source);
-  const [localVipLink, setLocalVipLink] = useState(vipGroupLink);
-  const [telegramToken, setTelegramToken] = useState('7192837461:AAF-bot-token-exemplo');
-  const [telegramChatId, setTelegramChatId] = useState('@bot_vip_ofertas_oficial');
-  const [isTelegramConnected, setIsTelegramConnected] = useState(true);
-  const [isSaved, setIsSaved] = useState(false);
+  const [backupJson, setBackupJson] = useState<string>('Carregando configurações...');
+  const [backupObject, setBackupObject] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isCopied, setIsCopied] = useState(false);
+  const [pastedJson, setPastedJson] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [activeView, setActiveView] = useState<'visual' | 'code'>('visual');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Active generating instance id
-  const [loadingInstanceId, setLoadingInstanceId] = useState<string | null>(null);
-
-  // Poll server for live WhatsApp connection
-  useEffect(() => {
-    const checkServerStatus = async () => {
-      try {
-        const res = await fetch('/api/whatsapp/status');
-        if (res.ok) {
-          const data = await res.json();
-          // Find any instance currently in 'conectando'
-          const connectingInst = instances.find((i) => i.status === 'conectando');
-
-          if (data.isConnected && connectingInst) {
-            onUpdateInstance(connectingInst.id, {
-              status: 'conectada',
-              phoneNumber: data.phoneNumber || '+55 11 98888-5887',
-              qrCodeDataUrl: undefined,
-            });
-            return;
-          }
-
-          if (data.qrDataUrl && connectingInst && !connectingInst.qrCodeDataUrl) {
-            onUpdateInstance(connectingInst.id, {
-              qrCodeDataUrl: data.qrDataUrl,
-            });
-          }
-        }
-      } catch (e) {
-        console.error('Falha ao checar status do WhatsApp:', e);
-      }
-    };
-
-    const interval = setInterval(checkServerStatus, 3000);
-    return () => clearInterval(interval);
-  }, [instances, onUpdateInstance]);
-
-  const handleConnectInstance = async (inst: WhatsAppInstance) => {
-    setLoadingInstanceId(inst.id);
-
-    onUpdateInstance(inst.id, {
-      status: 'conectando',
-      qrCodeDataUrl: undefined,
-    });
-
+  // Carrega todas as configurações de todas as abas
+  const loadFullConfiguration = async () => {
+    setIsLoading(true);
     try {
-      // Trigger QR generation from WhatsApp servers
-      const res = await fetch('/api/whatsapp/qr');
+      // 1. Busca configs do backend
+      const res = await fetch('/api/backup/export');
+      let serverBackup: any = {};
       if (res.ok) {
         const data = await res.json();
-        if (data.qrDataUrl) {
-          onUpdateInstance(inst.id, {
-            qrCodeDataUrl: data.qrDataUrl,
-            status: 'conectando',
-          });
-          setLoadingInstanceId(null);
-          return;
-        }
+        serverBackup = data.backup || {};
       }
 
-      // If server is still in handshake, poll up to 10 times (1s interval)
-      let attempts = 0;
-      const pollTimer = setInterval(async () => {
-        attempts++;
-        try {
-          const pollRes = await fetch('/api/whatsapp/status');
-          if (pollRes.ok) {
-            const pollData = await pollRes.json();
-            if (pollData.qrDataUrl) {
-              onUpdateInstance(inst.id, {
-                qrCodeDataUrl: pollData.qrDataUrl,
-                status: 'conectando',
-              });
-              clearInterval(pollTimer);
-              setLoadingInstanceId(null);
-            }
-          }
-        } catch {
-          // ignore transient poll error
-        }
-        if (attempts >= 10) {
-          clearInterval(pollTimer);
-          setLoadingInstanceId(null);
-        }
-      }, 1000);
-    } catch (e) {
-      console.error('Erro ao conectar ao WhatsApp:', e);
-      setLoadingInstanceId(null);
+      // 2. Mescla com os dados do frontend (localStorage/props)
+      const completeBackup = {
+        app: 'BOT VIP OFERTAS - AUTOMAÇÃO',
+        version: '1.0.0',
+        exportedAt: new Date().toISOString(),
+        exportedAtFormatted: new Date().toLocaleString('pt-BR'),
+        // Marketplaces & Afiliados
+        marketplacesConfig: serverBackup.marketplacesConfig || {},
+        affiliateSettings: serverBackup.affiliateSettings || {},
+        // Grupos & Canais
+        groups: groups,
+        telegramChannels: serverBackup.telegramChannels || [],
+        // Conexões & Links VIP
+        vipGroupLink: vipGroupLink || serverBackup.vipGroupLink || '',
+        // Fontes & Regras de Direcionamento
+        sourceRules: serverBackup.sourceRules && serverBackup.sourceRules.length > 0 ? serverBackup.sourceRules : sourceGroups,
+        // Filtro Anti-Marca d'Água
+        watermarkConfig: serverBackup.watermarkConfig || {},
+        // Filtro de Chat (Linhas com *exemplo*)
+        chatFilterConfig: serverBackup.chatFilterConfig || {},
+        // Telegram Bot Config
+        telegramConfig: serverBackup.telegramConfig || {},
+      };
+
+      setBackupObject(completeBackup);
+      setBackupJson(JSON.stringify(completeBackup, null, 2));
+    } catch (err: any) {
+      console.error('Erro ao carregar configurações para exportação:', err);
+      setFeedback({
+        type: 'error',
+        message: 'Falha ao consolidar configurações de todas as abas.',
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleDisconnectInstance = (inst: WhatsAppInstance) => {
-    onUpdateInstance(inst.id, {
-      status: 'desconectada',
-      qrCodeDataUrl: undefined,
-      phoneNumber: undefined,
+  useEffect(() => {
+    loadFullConfiguration();
+  }, [groups, sourceGroups, vipGroupLink]);
+
+  // 1. Download do arquivo JSON
+  const handleDownloadJson = () => {
+    try {
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
+      const fileName = `configuracoes-bot-vip-${dateStr}.json`;
+
+      const blob = new Blob([backupJson], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', fileName);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setFeedback({
+        type: 'success',
+        message: `Arquivo "${fileName}" baixado com sucesso! Salve em um local seguro.`,
+      });
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: `Erro ao gerar arquivo de download: ${err?.message || err}`,
+      });
+    }
+  };
+
+  // 2. Copiar JSON para área de transferência
+  const handleCopyJson = () => {
+    navigator.clipboard.writeText(backupJson);
+    setIsCopied(true);
+    setFeedback({
+      type: 'success',
+      message: 'JSON com todas as configurações copiado para a área de transferência!',
     });
+    setTimeout(() => setIsCopied(false), 3000);
   };
 
-  const handleSave = () => {
-    onUpdateParams(localToolId.trim(), localSource.trim(), localVipLink.trim());
-    setIsSaved(true);
-    setTimeout(() => setIsSaved(false), 2500);
+  // 3. Importar e Restaurar JSON (via arquivo ou texto)
+  const applyImportedJson = async (rawJsonString: string) => {
+    setIsImporting(true);
+    setFeedback(null);
+
+    try {
+      const parsed = JSON.parse(rawJsonString);
+      if (!parsed || typeof parsed !== 'object') {
+        throw new Error('O conteúdo fornecido não é um objeto JSON válido.');
+      }
+
+      // Envia para o servidor persistir todas as configurações
+      const res = await fetch('/api/backup/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backup: parsed }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'O servidor recusou a restauração do arquivo.');
+      }
+
+      // Atualiza localStorage se houver dados locais
+      if (Array.isArray(parsed.groups)) {
+        try {
+          localStorage.setItem('bot_vip_groups', JSON.stringify(parsed.groups));
+        } catch {}
+      }
+      if (Array.isArray(parsed.sourceRules)) {
+        try {
+          localStorage.setItem('bot_vip_sources', JSON.stringify(parsed.sourceRules));
+        } catch {}
+      }
+      if (typeof parsed.vipGroupLink === 'string' && parsed.vipGroupLink.trim()) {
+        try {
+          localStorage.setItem('bot_vip_link', parsed.vipGroupLink.trim());
+          if (onUpdateVipGroupLink) onUpdateVipGroupLink(parsed.vipGroupLink.trim());
+        } catch {}
+      }
+
+      setFeedback({
+        type: 'success',
+        message: 'Todas as configurações de todas as abas foram importadas e aplicadas com sucesso!',
+      });
+      setPastedJson('');
+
+      // Recarrega o estado atual
+      await loadFullConfiguration();
+
+      if (onImportComplete) {
+        onImportComplete();
+      }
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: `Erro na importação: ${err?.message || 'Arquivo JSON corrompido ou formato inválido.'}`,
+      });
+    } finally {
+      setIsImporting(false);
+    }
   };
 
-  const handleResetDefaults = () => {
-    setLocalToolId(OFFICIAL_USER_AFFILIATE_ID);
-    setLocalSource(OFFICIAL_SOURCE);
-    setLocalVipLink(DEFAULT_VIP_GROUP_LINK);
+  // Handler para upload de arquivo
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const content = event.target?.result as string;
+      if (content) {
+        await applyImportedJson(content);
+      }
+    };
+    reader.readAsText(file);
+    // Limpa o input para permitir selecionar o mesmo arquivo novamente se desejar
+    e.target.value = '';
   };
 
   return (
-    <div className="space-y-6">
-      {/* Title & Path Info */}
-      <div className="p-5 rounded-2xl bg-[#141517] border border-[#22242a] flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-md">
-        <div>
-          <h2 className="text-lg font-extrabold text-white flex items-center gap-2">
-            Configurações de Conexão & Afiliado
-          </h2>
-          <p className="text-xs text-neutral-400">
-            Gerencie suas instâncias de WhatsApp e parametrização oficial de rastreamento.
-          </p>
-        </div>
+    <div className="space-y-6 max-w-5xl mx-auto animate-in fade-in pb-12">
+      {/* Banner Principal */}
+      <div className="p-6 sm:p-8 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-bl from-[#FF5722]/10 via-[#FF5722]/5 to-transparent rounded-full blur-3xl pointer-events-none" />
 
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#18191d] border border-[#26282e] text-xs font-mono text-neutral-300">
-          <FolderCode className="w-4 h-4 text-[#FF5722]" />
-          <span>Diretório: </span>
-          <strong className="text-white">C:\ofertas_bot</strong>
-        </div>
-      </div>
-
-      {/* Section: Números de WhatsApp (Matching User Example Image) */}
-      <div className="space-y-4">
-        {/* Header Bar matching image 3 */}
-        <div className="p-4 rounded-2xl bg-[#141517] border border-[#22242a] flex items-center justify-between shadow-md">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center shrink-0">
-              <Smartphone className="w-5 h-5" />
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#FF5722] to-amber-500 flex items-center justify-center text-white shadow-lg shadow-[#FF5722]/20 shrink-0">
+              <FileJson className="w-6 h-6 stroke-[2.2]" />
             </div>
             <div>
-              <h3 className="font-extrabold text-base text-white tracking-tight">
-                Números de WhatsApp
-              </h3>
-              <p className="text-xs text-neutral-400">
-                Gerencie seus números para automações ({instances.length} cadastrada{instances.length === 1 ? '' : 's'})
+              <h2 className="text-lg sm:text-xl font-black text-white tracking-tight flex items-center gap-2.5">
+                <span>Backup & Exportação de Configurações</span>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#FF5722]/15 text-[#FF5722] border border-[#FF5722]/30">
+                  JSON UNIFICADO
+                </span>
+              </h2>
+              <p className="text-xs text-neutral-400 mt-0.5">
+                Salve, baixe ou importe todas as configurações de todas as abas do bot em um único arquivo.
               </p>
             </div>
           </div>
 
           <button
-            onClick={onAddInstance}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#FF5722] hover:bg-[#f4511e] text-white text-xs font-bold transition shadow-lg shadow-[#FF5722]/20 cursor-pointer"
+            type="button"
+            onClick={loadFullConfiguration}
+            disabled={isLoading}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#18191d] hover:bg-[#202228] border border-[#2a2c36] text-xs font-bold text-neutral-300 hover:text-white transition cursor-pointer self-start sm:self-auto"
           >
-            <Plus className="w-4 h-4 stroke-[2.5]" />
-            <span>Nova Instância</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-[#FF5722]' : ''}`} />
+            <span>Atualizar Dados</span>
           </button>
-        </div>
-
-        {/* Grid of WhatsApp Instances matching user images 4 & 5 */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {instances.map((inst) => {
-            const isDesconectada = inst.status === 'desconectada';
-            const isConectando = inst.status === 'conectando';
-            const isConectada = inst.status === 'conectada';
-
-            return (
-              <div
-                key={inst.id}
-                className="p-5 rounded-2xl bg-[#141517] border border-[#22242a] shadow-md flex flex-col justify-between space-y-4"
-              >
-                {/* Top Row: Icon + Title + Status Badge + Trash Can */}
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    {/* Circle Status Icon */}
-                    <div
-                      className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
-                        isConectada
-                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                          : isConectando
-                          ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                          : 'bg-[#1b1c20] text-neutral-500 border border-[#26282e]'
-                      }`}
-                    >
-                      {isConectada ? (
-                        <CheckCircle2 className="w-4 h-4" />
-                      ) : isConectando ? (
-                        <RefreshCw className="w-4 h-4 animate-spin text-amber-400" />
-                      ) : (
-                        <Radio className="w-4 h-4" />
-                      )}
-                    </div>
-
-                    <div className="space-y-0.5">
-                      <h4 className="font-bold text-sm text-white">{inst.name}</h4>
-                      <span
-                        className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                          isConectada
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                            : isConectando
-                            ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                            : 'bg-[#1e2025] text-neutral-400 border border-[#2a2c33]'
-                        }`}
-                      >
-                        {isConectada
-                          ? 'Conectada'
-                          : isConectando
-                          ? 'Conectando'
-                          : 'Desconectada'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Red Trash Can Icon to Delete Number and Unlink Groups */}
-                  <button
-                    onClick={() => onDeleteInstance(inst.id)}
-                    className="p-2 rounded-xl text-red-500 hover:text-red-400 hover:bg-red-950/30 transition cursor-pointer"
-                    title="Excluir número e desvincular grupos respectivos"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* State 1: Desconectada -> Large Button "Conectar Instância" (Matching Image 4) */}
-                {isDesconectada && (
-                  <div className="pt-3 border-t border-[#22242a]">
-                    <button
-                      onClick={() => handleConnectInstance(inst)}
-                      disabled={loadingInstanceId === inst.id}
-                      className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-emerald-500/40 text-emerald-400 bg-emerald-500/5 hover:bg-emerald-500/10 hover:border-emerald-500 transition font-bold text-xs cursor-pointer shadow-xs"
-                    >
-                      <QrCode className="w-4 h-4 text-emerald-400" />
-                      <span>
-                        {loadingInstanceId === inst.id
-                          ? 'Gerando Instância...'
-                          : 'Conectar Instância'}
-                      </span>
-                    </button>
-                  </div>
-                )}
-
-                {/* State 2: Conectando -> Dashed Box with QR Code (Matching Image 5) */}
-                {isConectando && (
-                  <div className="space-y-4">
-                    {/* Dashed Border Box */}
-                    <div className="border border-dashed border-[#2a2d36] rounded-2xl p-5 bg-[#0e0f11] flex flex-col items-center justify-center text-center space-y-3.5">
-                      {/* High-Resolution Scan-Ready QR Code with Soft Green Glow */}
-                      <div className="p-3 bg-white rounded-2xl shadow-xl shadow-emerald-500/10 ring-4 ring-emerald-500/15 relative">
-                        {inst.qrCodeDataUrl ? (
-                          <img
-                            src={inst.qrCodeDataUrl}
-                            alt="QR Code WhatsApp Web"
-                            className="w-52 h-52 object-contain rounded-lg block"
-                          />
-                        ) : (
-                          <div className="w-52 h-52 flex flex-col items-center justify-center gap-2 bg-neutral-100 rounded-lg">
-                            <RefreshCw className="w-7 h-7 text-[#FF5722] animate-spin" />
-                            <span className="text-[11px] text-neutral-600 font-medium">
-                              Aguardando token do WhatsApp...
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Sub-Header: Aguardando leitura... */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-center gap-1.5 text-xs font-bold text-emerald-400">
-                          <QrCode className="w-4 h-4 text-emerald-400" />
-                          <span>Aguardando leitura...</span>
-                        </div>
-                        <p className="text-[11px] text-neutral-400 max-w-xs leading-relaxed">
-                          Abra o WhatsApp no seu celular, vá em{' '}
-                          <strong className="text-neutral-200">Aparelhos Conectados</strong> e escaneie o código.
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Bottom Action Button */}
-                    <div className="pt-2 border-t border-[#22242a] flex items-center justify-between gap-2">
-                      <button
-                        onClick={() => handleConnectInstance(inst)}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl border border-emerald-500/40 text-emerald-400 bg-emerald-500/5 hover:bg-emerald-500/10 transition font-bold text-xs cursor-pointer"
-                      >
-                        <RefreshCw className="w-3.5 h-3.5" />
-                        <span>Atualizar QR Code</span>
-                      </button>
-
-                      <button
-                        onClick={() => handleDisconnectInstance(inst)}
-                        className="py-2.5 px-3 rounded-xl bg-neutral-800 text-neutral-400 hover:text-white transition text-xs font-semibold cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* State 3: Conectada -> Shows Success & Option to Disconnect */}
-                {isConectada && (
-                  <div className="space-y-3 pt-2 border-t border-[#22242a]">
-                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between text-xs">
-                      <span className="text-neutral-300">Número Conectado:</span>
-                      <strong className="text-emerald-400 font-mono font-bold">
-                        {inst.phoneNumber || '+55 11 98888-5887'}
-                      </strong>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[11px] text-neutral-400 px-1">
-                      <span className="flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                        Disparos e automações ativas
-                      </span>
-                      <button
-                        onClick={() => handleDisconnectInstance(inst)}
-                        className="text-red-400 hover:underline font-semibold cursor-pointer"
-                      >
-                        Desconectar
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
         </div>
       </div>
 
-      {/* Mandatory Affiliate ID & VIP Link Configuration */}
-      <div className="p-5 rounded-2xl bg-[#141517] border border-[#22242a] shadow-md space-y-5">
-        <div className="flex items-center justify-between pb-3 border-b border-[#22242a]">
-          <div>
-            <h3 className="font-bold text-sm text-white flex items-center gap-2">
-              Parâmetros Oficiais de Monetização & Grupo VIP
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#FF5722]/15 text-[#FF5722] border border-[#FF5722]/30 font-bold">
-                MANDATÓRIO
-              </span>
-            </h3>
-            <p className="text-xs text-neutral-400">
-              Esses parâmetros são injetados automaticamente em todas as URLs processadas pelo robô.
-            </p>
-          </div>
-
-          <button
-            onClick={handleResetDefaults}
-            className="flex items-center gap-1.5 text-xs text-neutral-400 hover:text-white transition px-2 py-1 cursor-pointer"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            Restaurar Padrão Oficial
-          </button>
+      {/* Feedback Alert */}
+      {feedback && (
+        <div
+          className={`p-4 rounded-xl text-xs font-bold flex items-center gap-3 animate-in fade-in shadow-md ${
+            feedback.type === 'success'
+              ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300'
+              : 'bg-red-500/10 border border-red-500/30 text-red-300'
+          }`}
+        >
+          {feedback.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
+          ) : (
+            <AlertCircle className="w-5 h-5 shrink-0 text-red-400" />
+          )}
+          <span>{feedback.message}</span>
         </div>
+      )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-neutral-300 flex items-center justify-between">
-              <span>ID de Afiliado (matt_tool_id):</span>
-              <span className="text-[10px] text-[#FF5722] font-mono">Oficial</span>
-            </label>
-            <input
-              type="text"
-              value={localToolId}
-              onChange={(e) => setLocalToolId(e.target.value)}
-              className="w-full px-3.5 py-2.5 bg-[#18191d] border border-[#22242a] rounded-xl text-xs font-mono text-[#FF5722] font-bold focus:outline-none focus:ring-2 focus:ring-[#FF5722]"
-              placeholder="sf20250625192813"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-neutral-300">
-              Origem de Tráfego (matt_source):
-            </label>
-            <input
-              type="text"
-              value={localSource}
-              onChange={(e) => setLocalSource(e.target.value)}
-              className="w-full px-3.5 py-2.5 bg-[#18191d] border border-[#22242a] rounded-xl text-xs font-mono text-neutral-200 focus:outline-none focus:ring-2 focus:ring-[#FF5722]"
-              placeholder="whatsapp"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-neutral-300">
-              Link de Convite do Grupo VIP:
-            </label>
-            <input
-              type="text"
-              value={localVipLink}
-              onChange={(e) => setLocalVipLink(e.target.value)}
-              className="w-full px-3.5 py-2.5 bg-[#18191d] border border-[#22242a] rounded-xl text-xs font-mono text-neutral-200 focus:outline-none focus:ring-2 focus:ring-[#FF5722]"
-              placeholder="https://chat.whatsapp.com/..."
-            />
-          </div>
-        </div>
-
-        {/* meli.la Mapping & Shortlink Hub */}
-        <div className="pt-4 border-t border-[#22242a] space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-yellow-400"></span>
-                Seus Links Encurtados Oficiais (meli.la)
-              </span>
-              <p className="text-[11px] text-neutral-400">
-                Os links meli.la são gerados exclusivamente pelo Mercado Livre. Quando o robô detecta um produto com link seu cadastrado, substitui na hora.
-              </p>
-            </div>
-            <a
-              href="https://www.mercadolivre.com.br/afiliados/linkbuilder#hub"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[11px] text-yellow-400 hover:underline font-bold flex items-center gap-1"
-            >
-              Abrir Gerador do Mercado Livre &rarr;
-            </a>
-          </div>
-
+      {/* PAINEL DE AÇÕES: BAIXAR E EXPORTAR JSON */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* CARD 1: EXPORTAR / BAIXAR JSON */}
+        <div className="p-6 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-4 flex flex-col justify-between">
           <div className="space-y-2">
-            <div className="p-3 rounded-xl bg-[#101114] border border-[#22242a] flex items-center justify-between text-xs font-mono">
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded bg-yellow-400/10 text-yellow-400 font-bold border border-yellow-400/20">
-                  MLB53228347
-                </span>
-                <span className="text-neutral-400 text-[11px]">Fone Havit Gamenote Fuxi-h6</span>
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#FF5722]/15 text-[#FF5722] flex items-center justify-center font-bold">
+                <Download className="w-4 h-4" />
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-emerald-400 font-bold">https://meli.la/1njPhaS</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-sans font-bold">
-                  Ativo
-                </span>
-              </div>
+              <h3 className="text-sm font-extrabold text-white">Baixar / Exportar Configurações</h3>
             </div>
-
-            <div className="p-3 rounded-xl bg-[#101114] border border-[#22242a] flex items-center justify-between text-xs font-mono">
-              <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 rounded bg-yellow-400/10 text-yellow-400 font-bold border border-yellow-400/20">
-                  MLB5237833724
-                </span>
-                <span className="text-neutral-400 text-[11px]">Vestido Infantil Skye Patrulha Canina</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-emerald-400 font-bold">https://meli.la/2dcm9f7</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-sans font-bold">
-                  Ativo
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#18191d] border border-[#22242a] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-          <div className="space-y-0.5">
-            <span className="font-semibold text-neutral-300">Regra de Conversão Segura:</span>
-            <p className="text-[11px] text-neutral-400 font-mono">
-              Link Concorrente &rarr; Produto Original &rarr; Link Oficial meli.la do Usuário
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              Gera um arquivo <code className="text-amber-300 font-mono font-bold">.json</code> com todos os dados: Marketplaces, Grupos, Canais, Conexões, Fontes, Filtros Anti-Marca e Filtro de Chat.
             </p>
           </div>
 
-          <button
-            onClick={handleSave}
-            className="flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#FF5722] hover:bg-[#f4511e] text-white font-bold transition shadow-lg shadow-[#FF5722]/20 cursor-pointer shrink-0"
-          >
-            {isSaved ? <Check className="w-4 h-4 stroke-[3]" /> : null}
-            {isSaved ? 'Configurações Salvas!' : 'Salvar Alterações'}
-          </button>
+          <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
+            <button
+              type="button"
+              onClick={handleDownloadJson}
+              disabled={isLoading}
+              className="flex-1 px-4 py-3 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-extrabold transition shadow-lg shadow-[#FF5722]/20 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>Baixar Arquivo JSON (.json)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleCopyJson}
+              disabled={isLoading}
+              className="px-4 py-3 rounded-xl bg-[#1e2026] hover:bg-[#282b33] border border-[#2f323e] text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              {isCopied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+              <span>{isCopied ? 'Copiado!' : 'Copiar JSON'}</span>
+            </button>
+          </div>
         </div>
+
+        {/* CARD 2: IMPORTAR / RESTAURAR JSON */}
+        <div className="p-6 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-4 flex flex-col justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-sky-500/15 text-sky-400 flex items-center justify-center font-bold">
+                <Upload className="w-4 h-4" />
+              </div>
+              <h3 className="text-sm font-extrabold text-white">Importar / Restaurar Arquivo</h3>
+            </div>
+            <p className="text-xs text-neutral-400 leading-relaxed">
+              Carregue um arquivo JSON exportado anteriormente para restaurar instantaneamente todas as abas e regras do sistema.
+            </p>
+          </div>
+
+          <div>
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept=".json,application/json"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isImporting}
+              className="w-full px-4 py-3 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-extrabold transition shadow-lg shadow-sky-500/20 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Upload className="w-4 h-4" />
+              <span>{isImporting ? 'Restaurando...' : 'Selecionar e Carregar Arquivo JSON'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* RESUMO DOS DADOS INCLUÍDOS NO JSON */}
+      <div className="p-6 sm:p-7 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-[#22242a]">
+          <div className="flex items-center gap-2.5">
+            <FileText className="w-4 h-4 text-[#FF5722]" />
+            <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
+              Conteúdo Consolidado no JSON de Exportação
+            </h3>
+          </div>
+          <span className="text-[11px] text-neutral-400 font-mono">
+            {backupObject ? `${Object.keys(backupObject).length} seções inclusas` : 'Consolidando...'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {/* Card Marketplaces */}
+          <div className="p-3.5 rounded-xl bg-[#18191d] border border-[#262832] space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <ShoppingBag className="w-3.5 h-3.5 text-amber-400" />
+                <span>Marketplaces</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                INCLUSO
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Tool ID oficial (<code>{backupObject?.affiliateSettings?.mercadoLivre?.toolId || 'sf20250625192813'}</code>), Shopee, Amazon e instâncias ativas.
+            </p>
+          </div>
+
+          {/* Card Grupos & Canais */}
+          <div className="p-3.5 rounded-xl bg-[#18191d] border border-[#262832] space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Users2 className="w-3.5 h-3.5 text-sky-400" />
+                <span>Grupos & Canais</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                {groups.length} GRUPOS
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Lista de grupos do WhatsApp, canais de transmissão e canais do Telegram.
+            </p>
+          </div>
+
+          {/* Card Fontes */}
+          <div className="p-3.5 rounded-xl bg-[#18191d] border border-[#262832] space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Radio className="w-3.5 h-3.5 text-[#FF5722]" />
+                <span>Fontes Monitoradas</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#FF5722]/10 text-[#FF5722] border border-[#FF5722]/20">
+                {sourceGroups.length} REGRAS
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Grupos concorrentes monitorados e regras de encaminhamento para grupos VIP.
+            </p>
+          </div>
+
+          {/* Card Anti-Marca d'Água */}
+          <div className="p-3.5 rounded-xl bg-[#18191d] border border-[#262832] space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span>Anti-Marca d'Água</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                FOTO LIMPA HD
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Grupos fontes configurados para substituição automática de foto oficial.
+            </p>
+          </div>
+
+          {/* Card Filtro de Chat */}
+          <div className="p-3.5 rounded-xl bg-[#18191d] border border-[#262832] space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Filtro de Chat</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                *EXEMPLO*
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Regras para apagar linhas entre asteriscos e frases cadastradas de fontes.
+            </p>
+          </div>
+
+          {/* Card Conexões & VIP */}
+          <div className="p-3.5 rounded-xl bg-[#18191d] border border-[#262832] space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Megaphone className="w-3.5 h-3.5 text-purple-400" />
+                <span>Links VIP & Telegram</span>
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                CONFIGURADO
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Link de convite do WhatsApp, Telegram e credenciais de bots.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* VISUALIZADOR DE CÓDIGO JSON & ÁREA PARA COLAR */}
+      <div className="p-6 sm:p-7 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#22242a]">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Code2 className="w-4 h-4 text-[#FF5722]" />
+              <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
+                Visualizador & Editor de Código JSON
+              </h3>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Você pode inspecionar o JSON atual ou colar um JSON para restaurar manualmente.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveView('visual')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                activeView === 'visual'
+                  ? 'bg-[#FF5722] text-white border-[#FF5722]'
+                  : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
+              }`}
+            >
+              Visualizar JSON Atual
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveView('code')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                activeView === 'code'
+                  ? 'bg-[#FF5722] text-white border-[#FF5722]'
+                  : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
+              }`}
+            >
+              Colar JSON para Aplicar
+            </button>
+          </div>
+        </div>
+
+        {activeView === 'visual' ? (
+          <div className="relative">
+            <pre className="p-4 bg-[#0e0f12] border border-[#22242a] rounded-xl text-xs font-mono text-neutral-300 max-h-96 overflow-y-auto overflow-x-auto leading-relaxed select-all">
+              {backupJson}
+            </pre>
+            <button
+              type="button"
+              onClick={handleCopyJson}
+              className="absolute top-3 right-3 px-3 py-1.5 rounded-lg bg-[#1e2027] hover:bg-[#282b35] border border-[#303340] text-xs font-bold text-white flex items-center gap-1.5 transition cursor-pointer shadow-md"
+            >
+              {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{isCopied ? 'Copiado!' : 'Copiar'}</span>
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <textarea
+              value={pastedJson}
+              onChange={(e) => setPastedJson(e.target.value)}
+              placeholder="Cole aqui o conteúdo completo do seu arquivo .json de backup..."
+              rows={10}
+              className="w-full p-4 bg-[#0e0f12] border border-[#262832] rounded-xl text-xs font-mono text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF5722] leading-relaxed"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-neutral-500">
+                Certifique-se de colar o JSON completo com todas as chaves válidas.
+              </span>
+              <button
+                type="button"
+                onClick={() => applyImportedJson(pastedJson)}
+                disabled={!pastedJson.trim() || isImporting}
+                className="px-4 py-2 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-2 cursor-pointer"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>{isImporting ? 'Aplicando...' : 'Aplicar Configurações Coladas'}</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

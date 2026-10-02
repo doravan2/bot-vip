@@ -6,8 +6,7 @@ import {
   Radio,
   Zap,
   CheckCircle2,
-  Layers,
-  Sparkles,
+  Settings,
   Send,
   Megaphone,
 } from 'lucide-react';
@@ -17,6 +16,8 @@ interface SidebarProps {
   currentTab: NavigationTab;
   onTabChange: (tab: NavigationTab) => void;
   isWhatsAppConnected?: boolean;
+  isTelegramConnected?: boolean;
+  telegramBotUsername?: string;
   isAutomationRunning?: boolean;
   className?: string;
 }
@@ -65,12 +66,20 @@ export const NAV_ITEMS: NavItemConfig[] = [
     icon: Zap,
     description: 'Configuração de mensagens e templates',
   },
+  {
+    id: 'configuracoes',
+    label: 'Configurações',
+    icon: Settings,
+    description: 'Exportar e baixar backup JSON de todas as abas',
+  },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentTab,
   onTabChange,
   isWhatsAppConnected = false,
+  isTelegramConnected = false,
+  telegramBotUsername,
   isAutomationRunning = true,
   className = '',
 }) => {
@@ -96,7 +105,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Navigation Items (Exatamente as 5 abas solicitadas) */}
+      {/* Navigation Items (Com a nova aba Configurações lá embaixo) */}
       <nav className="flex-1 space-y-1.5 overflow-y-auto pr-1">
         {NAV_ITEMS.map((item, index) => {
           const Icon = item.icon;
@@ -131,8 +140,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         })}
       </nav>
 
-      {/* Status Badges in Sidebar Bottom */}
+      {/* Status Badges in Sidebar Bottom (WhatsApp, Telegram e Replica Chat) */}
       <div className="pt-4 mt-2 border-t border-[#1f2024] space-y-2">
+        {/* WhatsApp Status */}
         <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#16171a] border border-[#22242a] text-xs">
           <div className="flex items-center gap-2">
             <Radio
@@ -153,6 +163,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </span>
         </div>
 
+        {/* Telegram Status Button / Badge */}
+        <button
+          type="button"
+          onClick={() => onTabChange('configuracoes')}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#16171a] hover:bg-[#1c1d22] border border-[#22242a] text-xs transition cursor-pointer group text-left"
+        >
+          <div className="flex items-center gap-2">
+            <Send
+              className={`w-3.5 h-3.5 transition ${
+                isTelegramConnected ? 'text-sky-400 animate-pulse' : 'text-neutral-500 group-hover:text-sky-400'
+              }`}
+            />
+            <span className="text-[11px] font-medium text-neutral-300 group-hover:text-white">
+              Telegram Bot
+            </span>
+          </div>
+          <span
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+              isTelegramConnected
+                ? 'bg-sky-500/15 text-sky-400 border border-sky-500/30'
+                : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+            }`}
+          >
+            {isTelegramConnected
+              ? telegramBotUsername
+                ? `@${telegramBotUsername}`
+                : 'ONLINE'
+              : 'OFFLINE'}
+          </span>
+        </button>
+
+        {/* Replica Chat Status */}
         <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#16171a] border border-[#22242a] text-xs">
           <div className="flex items-center gap-2">
             <CheckCircle2

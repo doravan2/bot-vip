@@ -82,6 +82,27 @@ const storageDir = path.resolve(process.cwd(), '.whatsapp_auth');
 const rulesFilePath = path.resolve(storageDir, 'source_rules.json');
 const logsFilePath = path.resolve(storageDir, 'replica_logs.json');
 
+const DEFAULT_FALLBACK_RULES: ActiveSourceRule[] = [
+  {
+    id: 'source-default-1',
+    sourceName: 'teste 1, garimpeiros geral, Atacado Vip Ofertas, Atacado Game Ofertas',
+    sourceNames: ['teste 1', 'garimpeiros geral', 'Atacado Vip Ofertas', 'Atacado Game Ofertas'],
+    platform: 'Misto',
+    sourcePlatforms: ['WhatsApp', 'Telegram', 'Telegram', 'Telegram'],
+    targetGroup: 'teste 2',
+    targetGroups: ['teste 2'],
+    targetPlatforms: ['WhatsApp'],
+    targetChatIds: [''],
+    autoForward: true,
+    filterCompetitorNames: true,
+    autoFetchProductImage: true,
+    validateMeliStock: true,
+    status: 'monitoring',
+    dealsCapturedToday: 0,
+    createdAt: '08:00:00',
+  },
+];
+
 let inMemoryRules: ActiveSourceRule[] = [];
 let inMemoryLogs: ClonedEventLog[] = [];
 
@@ -89,10 +110,17 @@ let inMemoryLogs: ClonedEventLog[] = [];
 try {
   if (fs.existsSync(rulesFilePath)) {
     const raw = fs.readFileSync(rulesFilePath, 'utf-8');
-    inMemoryRules = JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      inMemoryRules = parsed;
+    } else {
+      inMemoryRules = [...DEFAULT_FALLBACK_RULES];
+    }
+  } else {
+    inMemoryRules = [...DEFAULT_FALLBACK_RULES];
   }
 } catch {
-  inMemoryRules = [];
+  inMemoryRules = [...DEFAULT_FALLBACK_RULES];
 }
 
 try {
@@ -105,14 +133,22 @@ try {
 }
 
 export function getActiveSourceRules(): ActiveSourceRule[] {
-  if (inMemoryRules.length === 0 && fs.existsSync(rulesFilePath)) {
-    try {
-      const raw = fs.readFileSync(rulesFilePath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        inMemoryRules = parsed;
+  if (inMemoryRules.length === 0) {
+    if (fs.existsSync(rulesFilePath)) {
+      try {
+        const raw = fs.readFileSync(rulesFilePath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          inMemoryRules = parsed;
+        } else {
+          inMemoryRules = [...DEFAULT_FALLBACK_RULES];
+        }
+      } catch {
+        inMemoryRules = [...DEFAULT_FALLBACK_RULES];
       }
-    } catch {}
+    } else {
+      inMemoryRules = [...DEFAULT_FALLBACK_RULES];
+    }
   }
   return inMemoryRules;
 }

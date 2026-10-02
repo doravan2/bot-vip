@@ -45,8 +45,8 @@ import {
   getReplicaLogs,
   addReplicaLog,
   cleanAndMonetizeCompetitorMessage,
-  ActiveSourceRule,
 } from './src/server/replicaForwarder.ts';
+import type { ActiveSourceRule } from './src/server/replicaForwarder.ts';
 import {
   recordConversionLog,
   getConversionLogs,
@@ -200,6 +200,78 @@ app.get('/api/chat-filter/config', (_req, res) => {
 app.post('/api/chat-filter/config', (req, res) => {
   const updated = saveChatFilterConfig(req.body || {});
   res.json({ success: true, config: updated });
+});
+
+// Full System Backup Export & Import Endpoints
+app.get('/api/backup/export', (_req, res) => {
+  try {
+    const backupData = {
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      watermarkConfig: getWatermarkConfig(),
+      chatFilterConfig: loadChatFilterConfig(),
+      marketplacesConfig: getMarketplacesConfig(),
+      affiliateSettings: getAffiliateSettings(),
+      telegramConfig: getTelegramConfig(),
+      telegramChannels: getTelegramChannels(),
+      sourceRules: getActiveSourceRules(),
+      vipGroupLink: getVipGroupLink(),
+    };
+    return res.json({ success: true, backup: backupData });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Erro ao exportar configurações' });
+  }
+});
+
+app.post('/api/backup/import', (req, res) => {
+  try {
+    const payload = req.body?.backup || req.body;
+    if (!payload || typeof payload !== 'object') {
+      return res.status(400).json({ success: false, error: 'Arquivo ou JSON de configuração inválido.' });
+    }
+
+    if (payload.watermarkConfig) {
+      saveWatermarkConfig(payload.watermarkConfig);
+    }
+    if (payload.chatFilterConfig) {
+      saveChatFilterConfig(payload.chatFilterConfig);
+    }
+    if (payload.marketplacesConfig) {
+      saveMarketplacesConfig(payload.marketplacesConfig);
+    }
+    if (payload.affiliateSettings) {
+      updateAffiliateSettings(payload.affiliateSettings);
+    }
+    if (payload.telegramConfig) {
+      saveTelegramConfig(payload.telegramConfig);
+    }
+    if (Array.isArray(payload.telegramChannels)) {
+      saveTelegramChannels(payload.telegramChannels);
+    }
+    if (Array.isArray(payload.sourceRules)) {
+      setActiveSourceRules(payload.sourceRules);
+    }
+    if (typeof payload.vipGroupLink === 'string' && payload.vipGroupLink.trim()) {
+      setVipGroupLink(payload.vipGroupLink.trim());
+    }
+
+    return res.json({
+      success: true,
+      message: 'Todas as configurações de todas as abas foram importadas e restauradas com sucesso!',
+      appliedConfig: {
+        watermarkConfig: getWatermarkConfig(),
+        chatFilterConfig: loadChatFilterConfig(),
+        marketplacesConfig: getMarketplacesConfig(),
+        affiliateSettings: getAffiliateSettings(),
+        telegramConfig: getTelegramConfig(),
+        telegramChannels: getTelegramChannels(),
+        sourceRules: getActiveSourceRules(),
+        vipGroupLink: getVipGroupLink(),
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Erro ao restaurar backup' });
+  }
 });
 
 app.post('/api/watermark/detect', async (req, res) => {
@@ -791,8 +863,27 @@ app.get('/api/replica/rules', (_req, res) => {
   });
 });
 
+app.get('/api/rules', (_req, res) => {
+  return res.json({
+    success: true,
+    rules: getActiveSourceRules(),
+  });
+});
+
 // Update / sync active source monitoring rules
 app.post('/api/replica/rules', (req, res) => {
+  const { rules } = req.body;
+  if (!Array.isArray(rules)) {
+    return res.status(400).json({ error: 'Array de regras é obrigatório' });
+  }
+  setActiveSourceRules(rules);
+  return res.json({
+    success: true,
+    rules: getActiveSourceRules(),
+  });
+});
+
+app.post('/api/rules', (req, res) => {
   const { rules } = req.body;
   if (!Array.isArray(rules)) {
     return res.status(400).json({ error: 'Array de regras é obrigatório' });

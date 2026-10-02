@@ -9,6 +9,7 @@ import { CanaisPanel } from './components/panels/CanaisPanel.tsx';
 import { ConexoesPanel } from './components/panels/ConexoesPanel.tsx';
 import { FontesPanel } from './components/panels/FontesPanel.tsx';
 import { ReplicaChatPanel } from './components/panels/ReplicaChatPanel.tsx';
+import { ConfiguracoesPanel } from './components/panels/ConfiguracoesPanel.tsx';
 import {
   OFFICIAL_USER_AFFILIATE_ID,
   OFFICIAL_SOURCE,
@@ -150,44 +151,64 @@ export default function App() {
           }));
 
           setGroups((prev) => {
-            const cleanPrev = prev.filter(
-              (g) => g.platform !== 'Telegram' || (!g.name.toLowerCase().includes('_bot') && !g.id.startsWith('tg-bot-'))
-            );
-            const nonTg = cleanPrev.filter((g) => g.platform !== 'Telegram');
-            return [...nonTg, ...tgList];
+            const nonTg = prev.filter((g) => g.platform !== 'Telegram');
+            return deduplicateGroups([...nonTg, ...tgList]);
           });
         }
       })
       .catch(() => {});
   }, []);
 
-  // Save sources to localStorage and sync with server for live background listener
+  // Sync registered rules with sourceGroups state
+  useEffect(() => {
+    fetch('/api/rules')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.rules && Array.isArray(data.rules)) {
+          const mapped: SourceGroup[] = data.rules.map((r: any) => ({
+            id: r.id,
+            sourceName: r.sourceName,
+            sourceNames: r.sourceNames || [r.sourceName],
+            platform: r.platform || 'WhatsApp',
+            sourcePlatforms: r.sourcePlatforms || [r.platform || 'WhatsApp'],
+            targetGroup: r.targetGroup,
+            targetGroups: r.targetGroups || [r.targetGroup],
+            targetPlatforms: r.targetPlatforms || ['WhatsApp'],
+            targetChatIds: r.targetChatIds || [],
+            autoForward: r.autoForward,
+            filterCompetitorNames: r.filterCompetitorNames,
+            autoFetchProductImage: r.autoFetchProductImage !== false,
+            validateMeliStock: r.validateMeliStock !== false,
+            onlyMeliDeals: !!r.onlyMeliDeals,
+            status: r.status,
+            dealsCapturedToday: 0,
+            createdAt: 'Agora',
+          }));
+          setSourceGroups(mapped);
+          try {
+            localStorage.setItem('bot_vip_sources', JSON.stringify(mapped));
+          } catch {}
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Save sourceGroups to localStorage and sync with backend
   useEffect(() => {
     try {
       localStorage.setItem('bot_vip_sources', JSON.stringify(sourceGroups));
-      fetch('/api/replica/rules', {
+    } catch {}
+
+    if (Array.isArray(sourceGroups) && sourceGroups.length > 0) {
+      fetch('/api/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rules: sourceGroups }),
-      }).catch(() => {});
-    } catch {}
+      }).catch((e) => console.warn('Erro ao sincronizar regras com backend:', e));
+    }
   }, [sourceGroups]);
 
-  // On mount, if local storage is empty, check if backend has rules
-  useEffect(() => {
-    if (sourceGroups.length === 0) {
-      fetch('/api/replica/rules')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.rules && Array.isArray(data.rules) && data.rules.length > 0) {
-            setSourceGroups(data.rules);
-          }
-        })
-        .catch(() => {});
-    }
-  }, []);
-
-  // Sync WhatsApp Connection Status with Server
+  // Real WhatsApp Connection Status Polling
   useEffect(() => {
     const checkStatus = async () => {
       try {
@@ -211,6 +232,32 @@ export default function App() {
       } catch {}
     };
     checkStatus();
+  }, []);
+
+  // Telegram Connection Status Polling
+  const [isTelegramConnected, setIsTelegramConnected] = useState(false);
+  const [telegramBotUsername, setTelegramBotUsername] = useState('');
+
+  const checkTelegramStatus = async () => {
+    try {
+      const res = await fetch('/api/telegram/config');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.config) {
+          const isConn = data.config.status === 'connected';
+          setIsTelegramConnected(isConn);
+          if (data.config.botInfo?.username) {
+            setTelegramBotUsername(data.config.botInfo.username);
+          }
+        }
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    checkTelegramStatus();
+    const interval = setInterval(checkTelegramStatus, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const isWhatsAppConnected = instances.some((inst) => inst.status === 'conectada');
@@ -248,119 +295,121 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data.groups && Array.isArray(data.groups) && data.groups.length > 0) {
+          const newGroups: GroupChannel[] = data.groups.map((rg: any) => ({
+            id: rg.id,
+            instanceId: targetInstId,
+            name: rg.name,
+            platform: 'WhatsApp',
+            inviteLink: rg.inviteLink || (rg.id ? `https://chat.whatsapp.com/${rg.id}` : ''),
+            membersCount: rg.membersCount || 1,
+            maxCapacity: rg.maxCapacity || 1024,
+            isActive: true,
+            autoRotate: false,
+            dispatchesToday: 0,
+            type: 'group',
+          }));
+
           setGroups((prev) => {
-            const combined: GroupChannel[] = [...prev];
-            for (const realGrp of data.groups) {
-              combined.push({
-                id: realGrp.id || `grp-${Date.now()}-${Math.random()}`,
-                instanceId: targetInstId,
-                name: realGrp.name,
-                platform: 'WhatsApp',
-                inviteLink: realGrp.inviteLink || 'https://chat.whatsapp.com/',
-                membersCount: realGrp.membersCount || 1,
-                maxCapacity: 1024,
-                isActive: true,
-                autoRotate: true,
-                dispatchesToday: 0,
-              });
-            }
-            return deduplicateGroups(combined);
+            const currentNonWaGroups = prev.filter((g) => g.platform !== 'WhatsApp' || g.type === 'channel');
+            return deduplicateGroups([...currentNonWaGroups, ...newGroups]);
           });
         }
       }
 
-      // 2. Sync WhatsApp Channels (Newsletters)
-      const resChan = await fetch('/api/whatsapp/canais');
-      if (resChan.ok) {
-        const dataChan = await resChan.json();
-        if (dataChan.channels && Array.isArray(dataChan.channels) && dataChan.channels.length > 0) {
+      // 2. Sync WhatsApp Channels (@newsletter)
+      const resChannels = await fetch('/api/whatsapp/canais');
+      if (resChannels.ok) {
+        const dataC = await resChannels.json();
+        if (dataC.channels && Array.isArray(dataC.channels) && dataC.channels.length > 0) {
+          const newChannels: GroupChannel[] = dataC.channels.map((ch: any) => ({
+            id: ch.id,
+            instanceId: targetInstId,
+            name: ch.name,
+            platform: 'WhatsApp',
+            chatId: ch.id,
+            inviteLink: ch.inviteLink || `https://whatsapp.com/channel/${ch.id}`,
+            membersCount: ch.subscribersCount || 1,
+            maxCapacity: 1000000,
+            isActive: true,
+            autoRotate: false,
+            dispatchesToday: 0,
+            type: 'channel',
+            subscribersCount: ch.subscribersCount,
+          }));
+
           setGroups((prev) => {
-            const combined: GroupChannel[] = [...prev];
-            for (const realChan of dataChan.channels) {
-              combined.push({
-                id: realChan.id || `chan-${Date.now()}-${Math.random()}`,
-                instanceId: targetInstId,
-                name: realChan.name,
-                platform: 'WhatsApp',
-                type: 'channel',
-                inviteLink: realChan.inviteLink || 'https://whatsapp.com/channel/',
-                membersCount: realChan.membersCount || 1000,
-                maxCapacity: 1000000,
-                isActive: true,
-                autoRotate: false,
-                dispatchesToday: 0,
-              });
-            }
-            return deduplicateGroups(combined);
+            const otherItems = prev.filter((g) => !(g.platform === 'WhatsApp' && g.type === 'channel'));
+            return deduplicateGroups([...otherItems, ...newChannels]);
           });
         }
       }
-    } catch (e) {
-      console.error('Erro ao sincronizar grupos e canais:', e);
+    } catch (err) {
+      console.error('Erro ao sincronizar grupos e canais:', err);
     }
   };
 
-  // Group Actions
-  const handleToggleGroupActive = (groupId: string) => {
-    setGroups((prev) =>
-      prev.map((g) => (g.id === groupId ? { ...g, isActive: !g.isActive } : g))
+  // Group Channel Actions
+  const handleToggleGroupActive = (id: string) => {
+    setGroups(
+      groups.map((g) => (g.id === id ? { ...g, isActive: !g.isActive } : g))
     );
   };
 
-  const handleToggleAutoRotate = (groupId: string) => {
-    setGroups((prev) =>
-      prev.map((g) => (g.id === groupId ? { ...g, autoRotate: !g.autoRotate } : g))
+  const handleToggleAutoRotate = (id: string) => {
+    setGroups(
+      groups.map((g) => (g.id === id ? { ...g, autoRotate: !g.autoRotate } : g))
     );
   };
 
-  const handleDeleteGroup = (groupId: string) => {
-    setGroups((prev) => prev.filter((g) => g.id !== groupId));
+  const handleDeleteGroup = (id: string) => {
+    setGroups(groups.filter((g) => g.id !== id));
   };
 
-  const handleAddGroup = (newGrp: GroupChannel) => {
-    setGroups((prev) => deduplicateGroups([...prev, newGrp]));
+  const handleAddGroup = (group: GroupChannel) => {
+    setGroups(deduplicateGroups([...groups, group]));
   };
 
-  const handleAddGroups = (newGrps: GroupChannel[]) => {
-    setGroups((prev) => deduplicateGroups([...prev, ...newGrps]));
+  const handleAddGroups = (newGroupsList: GroupChannel[]) => {
+    setGroups(deduplicateGroups([...groups, ...newGroupsList]));
   };
 
   // Source Group Actions
-  const handleAddSourceGroup = (newSource: SourceGroup) => {
-    setSourceGroups((prev) => [...prev, newSource]);
+  const handleAddSourceGroup = (sourceGroup: SourceGroup) => {
+    setSourceGroups([...sourceGroups, sourceGroup]);
   };
 
-  const handleUpdateSourceGroup = (updatedSource: SourceGroup) => {
-    setSourceGroups((prev) =>
-      prev.map((sg) => (sg.id === updatedSource.id ? updatedSource : sg))
-    );
+  const handleUpdateSourceGroup = (sourceOrId: SourceGroup | string, updates?: Partial<SourceGroup>) => {
+    if (typeof sourceOrId === 'string') {
+      setSourceGroups(
+        sourceGroups.map((sg) => (sg.id === sourceOrId ? { ...sg, ...(updates || {}) } : sg))
+      );
+    } else {
+      setSourceGroups(
+        sourceGroups.map((sg) => (sg.id === sourceOrId.id ? { ...sg, ...sourceOrId } : sg))
+      );
+    }
   };
 
   const handleToggleSourceGroupStatus = (id: string) => {
-    setSourceGroups((prev) =>
-      prev.map((sg) =>
+    setSourceGroups(
+      sourceGroups.map((sg) =>
         sg.id === id
           ? {
               ...sg,
               status: sg.status === 'monitoring' ? 'paused' : 'monitoring',
-              autoForward: sg.status !== 'monitoring',
             }
           : sg
       )
     );
   };
 
-  const handleDeleteSourceGroup = (id: string) => {
-    setSourceGroups((prev) => prev.filter((sg) => sg.id !== id));
-  };
-
   const handleToggleAutoPhoto = (id: string) => {
-    setSourceGroups((prev) =>
-      prev.map((sg) =>
+    setSourceGroups(
+      sourceGroups.map((sg) =>
         sg.id === id
           ? {
               ...sg,
-              autoFetchProductImage: sg.autoFetchProductImage === false ? true : false,
+              autoFetchProductImage: sg.autoFetchProductImage !== undefined ? !sg.autoFetchProductImage : false,
             }
           : sg
       )
@@ -368,45 +417,47 @@ export default function App() {
   };
 
   const handleToggleMeliStock = (id: string) => {
-    setSourceGroups((prev) =>
-      prev.map((sg) =>
+    setSourceGroups(
+      sourceGroups.map((sg) =>
         sg.id === id
           ? {
               ...sg,
-              validateMeliStock: sg.validateMeliStock === false ? true : false,
+              validateMeliStock: sg.validateMeliStock !== undefined ? !sg.validateMeliStock : false,
             }
           : sg
       )
     );
   };
 
+  const handleDeleteSourceGroup = (id: string) => {
+    setSourceGroups(sourceGroups.filter((sg) => sg.id !== id));
+  };
+
   return (
-    <div className="min-h-screen bg-[#0e0f11] text-neutral-100 flex font-sans selection:bg-[#FF5722]/30">
-      {/* Desktop Sidebar (Permanent) */}
+    <div className="flex h-screen bg-[#0d0e11] text-[#e1e4ea] overflow-hidden font-sans antialiased">
+      {/* Desktop Sidebar */}
       <Sidebar
         currentTab={currentTab}
-        onTabChange={(tab) => {
-          setCurrentTab(tab);
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
+        onTabChange={setCurrentTab}
         isWhatsAppConnected={isWhatsAppConnected}
+        isTelegramConnected={isTelegramConnected}
+        telegramBotUsername={telegramBotUsername}
         isAutomationRunning={true}
         className="hidden lg:flex"
       />
 
-      {/* Mobile Drawer Navigation */}
+      {/* Mobile Drawer */}
       {isMobileMenuOpen && (
         <div className="fixed inset-0 z-50 lg:hidden flex">
           <div
-            className="fixed inset-0 bg-black/80 backdrop-blur-xs"
+            className="fixed inset-0 bg-black/80 backdrop-blur-xs transition-opacity"
             onClick={() => setIsMobileMenuOpen(false)}
           />
-          <div className="relative w-72 bg-[#121214] h-full z-10 flex flex-col shadow-2xl">
-            <div className="p-4 flex justify-between items-center border-b border-[#22242a]">
-              <span className="font-extrabold text-white text-base">Menu • chat bot</span>
+          <div className="relative flex-1 flex flex-col max-w-xs w-full bg-[#121214] z-10">
+            <div className="absolute top-0 right-0 -mr-12 pt-4">
               <button
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="p-1.5 rounded-lg text-neutral-400 hover:text-white"
+                className="p-2 rounded-xl text-neutral-400 hover:text-white"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -419,6 +470,8 @@ export default function App() {
                   setIsMobileMenuOpen(false);
                 }}
                 isWhatsAppConnected={isWhatsAppConnected}
+                isTelegramConnected={isTelegramConnected}
+                telegramBotUsername={telegramBotUsername}
                 isAutomationRunning={true}
                 className="border-none"
               />
@@ -472,7 +525,7 @@ export default function App() {
             />
           )}
 
-          {/* TAB 3: Conexões */}
+          {/* TAB 4: Conexões */}
           {currentTab === 'conexoes' && (
             <ConexoesPanel
               instances={instances}
@@ -486,7 +539,7 @@ export default function App() {
             />
           )}
 
-          {/* TAB 4: Fontes */}
+          {/* TAB 5: Fontes */}
           {currentTab === 'fontes' && (
             <FontesPanel
               sourceGroups={sourceGroups}
@@ -501,12 +554,25 @@ export default function App() {
             />
           )}
 
-          {/* TAB 5: Replica Chat */}
+          {/* TAB 6: Replica Chat */}
           {currentTab === 'replica-chat' && (
             <ReplicaChatPanel
               groups={groups}
               vipGroupLink={vipGroupLink}
               onUpdateVipGroupLink={handleUpdateVipGroupLink}
+            />
+          )}
+
+          {/* TAB 7: Configurações (Exportar/Baixar JSON de Todas as Abas) */}
+          {currentTab === 'configuracoes' && (
+            <ConfiguracoesPanel
+              groups={groups}
+              sourceGroups={sourceGroups}
+              vipGroupLink={vipGroupLink}
+              onUpdateVipGroupLink={handleUpdateVipGroupLink}
+              onImportComplete={() => {
+                checkTelegramStatus();
+              }}
             />
           )}
         </main>

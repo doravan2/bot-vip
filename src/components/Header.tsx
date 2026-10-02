@@ -35,14 +35,15 @@ const TAB_TITLES: Record<NavigationTab, { title: string; subtitle: string }> = {
     title: 'Replica Chat',
     subtitle: 'Configuração de mensagens, conversão de links e personalização de templates',
   },
+  configuracoes: {
+    title: 'Backup & Exportação de Configurações',
+    subtitle: 'Salve, exporte e baixe todas as configurações de todas as abas em formato JSON',
+  },
 };
 
 export const Header: React.FC<HeaderProps> = ({
   currentTab,
   onOpenMobileMenu,
-  onOpenReplicaModal,
-  toolId,
-  isWhatsAppConnected,
 }) => {
   const currentInfo = TAB_TITLES[currentTab] || TAB_TITLES.marketplaces;
 
@@ -67,8 +68,7 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Header Right Actions (Cleaned up as requested) */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
       </div>
     </header>
   );

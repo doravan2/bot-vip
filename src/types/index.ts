@@ -4,7 +4,8 @@ export type NavigationTab =
   | 'canais'
   | 'conexoes'
   | 'fontes'
-  | 'replica-chat';
+  | 'replica-chat'
+  | 'configuracoes';
 
 export interface ProductItem {
   id: string;

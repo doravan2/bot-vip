@@ -26,7 +26,7 @@ const DEFAULT_CONFIG: WatermarkConfig = {
   replaceTextHandle: true,
   userHandle: '',
   appliedGroups: [],
-  allGroupsActive: false,
+  allGroupsActive: true,
 };
 
 let inMemoryConfig: WatermarkConfig = { ...DEFAULT_CONFIG };
@@ -44,15 +44,41 @@ export function getWatermarkConfig(): WatermarkConfig {
   return inMemoryConfig;
 }
 
+/**
+ * Normaliza o identificador ou nome de um grupo para match sem ruídos
+ */
+function normalizeGroupName(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/^\[(FONTE|DESTINO|WhatsApp|Telegram)\]\s*/gi, '')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Checa se o Filtro Anti-Marca d'Água está ativo para uma FONTE (grupo/canal/JID de origem)
+ */
 export function isWatermarkActiveForGroup(groupNameOrJid: string): boolean {
   const config = getWatermarkConfig();
   if (!config.enabled) return false;
-  if (config.allGroupsActive) return true;
-  if (!config.appliedGroups || config.appliedGroups.length === 0) return false;
-  const cleanTarget = groupNameOrJid.toLowerCase().trim();
+  if (config.allGroupsActive || !config.appliedGroups || config.appliedGroups.length === 0) return true;
+  if (!groupNameOrJid) return true;
+
+  const rawCandidate = groupNameOrJid.toLowerCase().trim();
+  const normCandidate = normalizeGroupName(groupNameOrJid);
+
   return config.appliedGroups.some((g) => {
-    const cleanG = g.toLowerCase().trim();
-    return cleanTarget.includes(cleanG) || cleanG.includes(cleanTarget);
+    if (!g) return false;
+    const rawG = g.toLowerCase().trim();
+    if (rawCandidate === rawG) return true;
+    if (rawCandidate.includes(rawG) || rawG.includes(rawCandidate)) return true;
+
+    const normG = normalizeGroupName(g);
+    if (normCandidate && normG && (normCandidate === normG || normCandidate.includes(normG) || normG.includes(normCandidate))) {
+      return true;
+    }
+    return false;
   });
 }
 
@@ -67,6 +93,18 @@ export function saveWatermarkConfig(updates: Partial<WatermarkConfig>): Watermar
     console.error('Erro ao salvar watermark_config.json:', e);
   }
   return inMemoryConfig;
+}
+
+/**
+ * Substitui @handles de concorrentes no texto pelo handle oficial do usuário
+ */
+export function replaceCompetitorHandlesInText(text: string, targetHandle: string = ''): string {
+  if (!text) return '';
+  const cleanTarget = targetHandle.trim().startsWith('@') ? targetHandle.trim() : targetHandle.trim() ? `@${targetHandle.trim()}` : '';
+  if (cleanTarget) {
+    return text.replace(/@[A-Za-z0-9_.]+/g, cleanTarget);
+  }
+  return text.replace(/@[A-Za-z0-9_.]+/g, '').replace(/\s{2,}/g, ' ');
 }
 
 /**
@@ -92,7 +130,6 @@ export async function detectWatermarkOnImage(base64Data: string, mimeType: strin
     };
   }
 
-  // Quick fallback check against known usernames in OCR/string if text present
   const known = config.knownUsernames || ['@gustavohoffmannofc'];
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -119,117 +156,66 @@ export async function detectWatermarkOnImage(base64Data: string, mimeType: strin
 
     const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
 
-    // Model selection: Use gemini-2.5-flash (standard high-speed vision model)
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType,
-              data: cleanBase64,
-            },
-          },
-          {
-            text: `Examine esta imagem de produto com atenção total para identificar se existe alguma marca d'água de concorrente, selo de perfil, avatar circular com borda, selo azul de verificado ou arroba/username de rede social (exemplo: @gustavohoffmannofc ou similar).
+    const prompt = `Analise esta foto de produto promocional de e-commerce e determine se ela contém QUALQUER uma das marcas d'água, carimbos de perfil ou elementos visuais de concorrentes listados abaixo:
+1. Marca d'água com @ arroba ou nome de concorrente (como: ${known.join(', ')} ou qualquer outro perfil de promoções).
+2. Miniatura de foto de perfil (avatar redondo com foto de rosto de homem, mulher ou logotipo no canto superior ou inferior).
+3. Selo de verificado azul com checkmark (blue badge) colado na imagem.
+4. Banners flutuantes ou logotipos sobrepostos com nomes de grupos de ofertas.
 
 Responda ESTRITAMENTE em formato JSON com o seguinte schema:
 {
-  "hasWatermark": boolean,
-  "detectedHandles": string[],
-  "hasAvatarBadge": boolean,
-  "hasVerifiedCheckmark": boolean,
-  "confidence": number,
-  "description": string
-}`,
-          },
-        ],
-      },
+  "hasWatermark": boolean (true se houver qualquer marca d'água, avatar ou arroba de concorrente),
+  "detectedHandles": string[] (lista de @handles detectados),
+  "hasAvatarBadge": boolean (true se houver miniatura de foto de rosto/perfil no canto),
+  "hasVerifiedCheckmark": boolean (true se houver selo de verificado sobreposto),
+  "confidence": number (de 0.0 a 1.0),
+  "reason": string (breve descrição do que foi detectado)
+}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                data: cleanBase64,
+                mimeType: mimeType || 'image/jpeg',
+              },
+            },
+            {
+              text: prompt,
+            },
+          ],
+        },
+      ],
       config: {
         responseMimeType: 'application/json',
       },
     });
 
-    const text = response.text?.trim();
-    if (text) {
-      const parsed = JSON.parse(text);
-      const detected: string[] = Array.isArray(parsed.detectedHandles) ? parsed.detectedHandles : [];
+    const text = response.text || '';
+    const cleanJsonText = text.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleanJsonText);
 
-      // Check if known handles matched
-      const matchedKnown = known.some((k) =>
-        text.toLowerCase().includes(k.toLowerCase().replace('@', ''))
-      );
-
-      const isWatermarked =
-        parsed.hasWatermark ||
-        parsed.hasAvatarBadge ||
-        parsed.hasVerifiedCheckmark ||
-        detected.length > 0 ||
-        matchedKnown;
-
-      return {
-        hasWatermark: !!isWatermarked,
-        detectedHandles: detected,
-        hasAvatarBadge: !!parsed.hasAvatarBadge,
-        hasVerifiedCheckmark: !!parsed.hasVerifiedCheckmark,
-        confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.9,
-        reason: parsed.description || 'Marca d\'água ou marca de concorrente identificada.',
-      };
-    }
+    return {
+      hasWatermark: Boolean(parsed.hasWatermark || parsed.hasAvatarBadge || parsed.hasVerifiedCheckmark),
+      detectedHandles: Array.isArray(parsed.detectedHandles) ? parsed.detectedHandles : [],
+      hasAvatarBadge: Boolean(parsed.hasAvatarBadge),
+      hasVerifiedCheckmark: Boolean(parsed.hasVerifiedCheckmark),
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.9,
+      reason: parsed.reason || 'Análise visual concluída.',
+    };
   } catch (err: any) {
-    const errMsg = String(err?.message || err);
-    if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota exceeded')) {
-      console.warn('[Watermark AI Detector] ⚠️ Cota do Gemini excedida (429). Alternando temporariamente para filtro local de marca d\'água.');
-    } else {
-      console.warn('[Watermark AI Detector] Aviso ao analisar imagem com IA:', errMsg);
-    }
+    console.error('[Watermark AI Detector] Erro na análise com Gemini Vision:', err);
+    return {
+      hasWatermark: false,
+      detectedHandles: [],
+      hasAvatarBadge: false,
+      hasVerifiedCheckmark: false,
+      confidence: 0,
+      reason: `Falha na análise: ${err?.message || err}`,
+    };
   }
-
-  return {
-    hasWatermark: false,
-    detectedHandles: [],
-    hasAvatarBadge: false,
-    hasVerifiedCheckmark: false,
-    confidence: 0,
-  };
-}
-
-/**
- * Replaces competitor social handles (like @atacadovipofertas, @grupo_descontos, etc.)
- * in copy text with the user's custom handle or removes them cleanly.
- */
-export function replaceCompetitorHandlesInText(text: string, newUserHandle?: string): string {
-  if (!text) return '';
-  const config = getWatermarkConfig();
-  const known = config.knownUsernames || [];
-
-  let result = text;
-
-  // Replace known handles first
-  for (const handle of known) {
-    if (!handle) continue;
-    const cleanHandle = handle.startsWith('@') ? handle : `@${handle}`;
-    const regex = new RegExp(cleanHandle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    if (newUserHandle && newUserHandle.trim()) {
-      const replacement = newUserHandle.trim().startsWith('@')
-        ? newUserHandle.trim()
-        : `@${newUserHandle.trim()}`;
-      result = result.replace(regex, replacement);
-    } else {
-      result = result.replace(regex, '');
-    }
-  }
-
-  // Replace any generic handle (@username) if configured
-  if (newUserHandle && newUserHandle.trim()) {
-    const replacement = newUserHandle.trim().startsWith('@')
-      ? newUserHandle.trim()
-      : `@${newUserHandle.trim()}`;
-    result = result.replace(/@[A-Za-z0-9_.]+/g, replacement);
-  } else {
-    result = result.replace(/@[A-Za-z0-9_.]+/g, '');
-  }
-
-  // Clean up extra spaces left by removals
-  return result.replace(/  +/g, ' ').trim();
 }

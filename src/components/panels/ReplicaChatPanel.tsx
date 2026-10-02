@@ -211,16 +211,21 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
       })
       .catch(() => {});
 
-    // From Source Rules
+    // From Source Rules (Grupos e Canais Fontes Monitorados)
     fetch('/api/rules')
       .then((r) => r.json())
       .then((data) => {
         if (data.rules && Array.isArray(data.rules)) {
           data.rules.forEach((rule: any) => {
-            const name = rule.sourceName || rule.targetGroup;
-            if (name && !list.some((item) => item.name === name)) {
-              list.push({ id: rule.id || name, name, type: 'Grupo Fonte' });
-            }
+            const sources = [
+              rule.sourceName,
+              ...(Array.isArray(rule.sourceNames) ? rule.sourceNames : []),
+            ].filter(Boolean);
+            sources.forEach((name) => {
+              if (name && !list.some((item) => item.name === name)) {
+                list.unshift({ id: name, name, type: 'Grupo Fonte' });
+              }
+            });
           });
         }
       })
@@ -1548,14 +1553,14 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
               </div>
             </div>
 
-            {/* GRUPOS DE ATUAÇÃO - COMPACTO NA MESMA ABA */}
+            {/* GRUPOS DE ATUAÇÃO (FONTES MONITORADAS) - COMPACTO NA MESMA ABA */}
             <div className="p-4 sm:p-5 rounded-2xl bg-[#18191d] border border-[#262832] space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#23252d]">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
                     <Users2 className="w-4 h-4 text-[#FF5722]" />
                     <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
-                      Grupos de Atuação do Filtro
+                      Grupos Fontes de Atuação do Filtro
                     </h3>
                     <span
                       className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
@@ -1567,14 +1572,14 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                       }`}
                     >
                       {watermarkConfig.allGroupsActive
-                        ? 'Todos os Grupos'
+                        ? 'Todas as Fontes'
                         : (watermarkConfig.appliedGroups || []).length > 0
-                        ? `${watermarkConfig.appliedGroups?.length || 0} selecionado(s)`
-                        : 'Nenhum grupo selecionado'}
+                        ? `${watermarkConfig.appliedGroups?.length || 0} fonte(s) selecionada(s)`
+                        : 'Nenhuma fonte selecionada'}
                     </span>
                   </div>
                   <p className="text-[11px] text-neutral-400">
-                    O filtro de foto limpa HD vai atuar e se manter ativo <strong>somente</strong> nos grupos adicionados abaixo.
+                    O filtro de foto limpa HD vai atuar e substituir a imagem <strong>somente quando a mensagem vier dos grupos/canais fontes</strong> (concorrentes) adicionados abaixo.
                   </p>
                 </div>
 
@@ -1588,7 +1593,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
                     }`}
                   >
-                    Grupos Específicos
+                    Fontes Específicas
                   </button>
                   <button
                     type="button"
@@ -1599,7 +1604,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
                     }`}
                   >
-                    Todos os Grupos
+                    Todas as Fontes
                   </button>
                 </div>
               </div>
@@ -1607,7 +1612,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
               {!watermarkConfig.allGroupsActive && (
                 <div className="space-y-3">
                   <div className="flex flex-col sm:flex-row gap-2">
-                    {/* Seletor dropdown de grupos/canais disponíveis */}
+                    {/* Seletor dropdown de grupos fontes disponíveis */}
                     {allAvailableGroups.length > 0 && (
                       <select
                         value=""
@@ -1618,7 +1623,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         }}
                         className="px-3 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white focus:outline-none focus:border-[#FF5722] cursor-pointer"
                       >
-                        <option value="">+ Selecionar grupo/canal conectado...</option>
+                        <option value="">+ Selecionar grupo/canal fonte monitorado...</option>
                         {allAvailableGroups
                           .filter((g) => !(watermarkConfig.appliedGroups || []).includes(g.name))
                           .map((g) => (
@@ -1629,14 +1634,14 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                       </select>
                     )}
 
-                    {/* Campo de texto livre para adicionar qualquer grupo por nome */}
+                    {/* Campo de texto livre para adicionar qualquer grupo fonte por nome */}
                     <div className="flex-1 flex gap-2">
                       <input
                         type="text"
                         value={customGroupInput}
                         onChange={(e) => setCustomGroupInput(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleAddCustomGroup()}
-                        placeholder="Ou digite o nome do grupo para adicionar..."
+                        placeholder="Ou digite o nome do grupo fonte para adicionar..."
                         className="flex-1 px-3.5 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF5722]"
                       />
                       <button
@@ -1645,7 +1650,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         className="px-3.5 py-2 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span>Adicionar</span>
+                        <span>Adicionar Fonte</span>
                       </button>
                     </div>
                   </div>
@@ -1654,7 +1659,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                   <div className="p-3 bg-[#121316] border border-[#22242a] rounded-xl min-h-[56px] flex flex-wrap gap-2 items-center">
                     {(watermarkConfig.appliedGroups || []).length === 0 ? (
                       <span className="text-xs text-neutral-500 italic p-1">
-                        Nenhum grupo selecionado. Selecione no dropdown acima ou digite para adicionar.
+                        Nenhum grupo fonte selecionado. Selecione no dropdown acima ou digite para adicionar fontes com marcas d'água.
                       </span>
                     ) : (
                       (watermarkConfig.appliedGroups || []).map((grpName) => (
@@ -1668,7 +1673,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                             type="button"
                             onClick={() => handleRemoveGroupWatermark(grpName)}
                             className="ml-1 text-neutral-400 hover:text-red-400 transition cursor-pointer p-0.5 rounded"
-                            title="Remover grupo"
+                            title="Remover grupo fonte"
                           >
                             <X className="w-3.5 h-3.5" />
                           </button>
@@ -1680,7 +1685,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                   {(watermarkConfig.appliedGroups || []).length > 0 && (
                     <div className="flex items-center justify-between text-[11px] text-neutral-400 px-1">
                       <span>
-                        🛡️ O filtro atuará exclusivamente nos <strong>{watermarkConfig.appliedGroups?.length || 0}</strong> grupo(s) selecionado(s) acima.
+                        🛡️ O filtro de foto limpa HD atuará exclusivamente nas mensagens que tiverem como <strong>origem (fonte)</strong> os <strong>{watermarkConfig.appliedGroups?.length || 0}</strong> grupo(s) selecionado(s) acima.
                       </span>
                       <button
                         type="button"
@@ -1771,14 +1776,14 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
               </div>
             </div>
 
-            {/* GRUPOS DE ATUAÇÃO - COMPACTO NA MESMA ABA */}
+            {/* GRUPOS DE ATUAÇÃO (FONTES MONITORADAS) - COMPACTO NA MESMA ABA */}
             <div className="p-4 sm:p-5 rounded-2xl bg-[#18191d] border border-[#262832] space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#23252d]">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
                     <Users2 className="w-4 h-4 text-[#FF5722]" />
                     <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
-                      Grupos de Atuação do Filtro
+                      Grupos Fontes de Atuação do Filtro
                     </h3>
                     <span
                       className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
@@ -1790,14 +1795,14 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                       }`}
                     >
                       {chatFilterConfig.allGroupsActive
-                        ? 'Todos os Grupos'
+                        ? 'Todas as Fontes'
                         : (chatFilterConfig.appliedGroups || []).length > 0
-                        ? `${chatFilterConfig.appliedGroups?.length || 0} selecionado(s)`
-                        : 'Nenhum grupo selecionado'}
+                        ? `${chatFilterConfig.appliedGroups?.length || 0} fonte(s) selecionada(s)`
+                        : 'Nenhuma fonte selecionada'}
                     </span>
                   </div>
                   <p className="text-[11px] text-neutral-400">
-                    O filtro de chat vai atuar e se manter ativo <strong>somente</strong> nos grupos adicionados abaixo.
+                    O filtro de chat vai atuar e apagar linhas em *exemplo* <strong>somente quando a mensagem vier dos grupos/canais fontes</strong> (concorrentes) adicionados abaixo.
                   </p>
                 </div>
 
@@ -1811,7 +1816,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
                     }`}
                   >
-                    Grupos Específicos
+                    Fontes Específicas
                   </button>
                   <button
                     type="button"
@@ -1822,7 +1827,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         : 'bg-[#121316] text-neutral-400 border-[#2a2c36] hover:text-white'
                     }`}
                   >
-                    Todos os Grupos
+                    Todas as Fontes
                   </button>
                 </div>
               </div>
@@ -1841,7 +1846,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         }}
                         className="px-3 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white focus:outline-none focus:border-[#FF5722] cursor-pointer"
                       >
-                        <option value="">+ Selecionar grupo/canal conectado...</option>
+                        <option value="">+ Selecionar grupo/canal fonte monitorado...</option>
                         {allAvailableGroups
                           .filter((g) => !(chatFilterConfig.appliedGroups || []).includes(g.name))
                           .map((g) => (
@@ -1859,7 +1864,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         value={customChatGroupInput}
                         onChange={(e) => setCustomChatGroupInput(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleAddCustomChatGroup()}
-                        placeholder="Ou digite o nome do grupo para adicionar..."
+                        placeholder="Ou digite o nome do grupo fonte para adicionar..."
                         className="flex-1 px-3.5 py-2 bg-[#121316] border border-[#2a2c36] rounded-xl text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-[#FF5722]"
                       />
                       <button
@@ -1868,7 +1873,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                         className="px-3.5 py-2 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span>Adicionar</span>
+                        <span>Adicionar Fonte</span>
                       </button>
                     </div>
                   </div>
@@ -1877,7 +1882,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                   <div className="p-3 bg-[#121316] border border-[#22242a] rounded-xl min-h-[56px] flex flex-wrap gap-2 items-center">
                     {(chatFilterConfig.appliedGroups || []).length === 0 ? (
                       <span className="text-xs text-neutral-500 italic p-1">
-                        Nenhum grupo selecionado. Selecione no dropdown acima ou digite para adicionar.
+                        Nenhum grupo fonte selecionado. Selecione no dropdown acima ou digite para adicionar fontes com linhas a serem filtradas.
                       </span>
                     ) : (
                       (chatFilterConfig.appliedGroups || []).map((grpName) => (
@@ -1891,7 +1896,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                             type="button"
                             onClick={() => handleRemoveGroupChatFilter(grpName)}
                             className="ml-1 text-neutral-400 hover:text-red-400 transition cursor-pointer p-0.5 rounded"
-                            title="Remover grupo"
+                            title="Remover grupo fonte"
                           >
                             <X className="w-3.5 h-3.5" />
                           </button>
@@ -1903,7 +1908,7 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                   {(chatFilterConfig.appliedGroups || []).length > 0 && (
                     <div className="flex items-center justify-between text-[11px] text-neutral-400 px-1">
                       <span>
-                        🛡️ O filtro de chat atuará exclusivamente nos <strong>{chatFilterConfig.appliedGroups?.length || 0}</strong> grupo(s) selecionado(s) acima.
+                        🛡️ O filtro de chat atuará exclusivamente nas mensagens que tiverem como <strong>origem (fonte)</strong> os <strong>{chatFilterConfig.appliedGroups?.length || 0}</strong> grupo(s) selecionado(s) acima.
                       </span>
                       <button
                         type="button"
