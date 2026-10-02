@@ -666,15 +666,29 @@ export default function App() {
           {/* TAB 7: Agenda / Tempo */}
           {currentTab === 'agenda' && <AgendaPanel />}
 
-          {/* TAB 8: Configurações (Exportar/Baixar JSON de Todas as Abas) */}
+          {/* TAB 8: Configurações (Exportar/Baixar JSON de Todas as Abas & Gerenciador de Fontes) */}
           {currentTab === 'configuracoes' && (
             <ConfiguracoesPanel
               groups={groups}
               sourceGroups={sourceGroups}
               vipGroupLink={vipGroupLink}
               onUpdateVipGroupLink={handleUpdateVipGroupLink}
+              onAddSourceGroup={handleAddSourceGroup}
+              onUpdateSourceGroup={handleUpdateSourceGroup}
+              onToggleSourceGroupStatus={handleToggleSourceGroupStatus}
+              onDeleteSourceGroup={handleDeleteSourceGroup}
+              onSaveSourceGroups={(savedList) => setSourceGroups(savedList)}
               onImportComplete={() => {
                 checkTelegramStatus();
+                // Recarrega as fontes do backend após importação
+                fetch('/api/rules')
+                  .then((res) => res.json())
+                  .then((data) => {
+                    if (data.rules && Array.isArray(data.rules)) {
+                      setSourceGroups(data.rules);
+                    }
+                  })
+                  .catch(() => {});
               }}
             />
           )}

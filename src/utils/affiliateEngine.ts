@@ -101,9 +101,12 @@ export function isCompetitorShareUrl(rawUrl: string, activeGroupLink?: string): 
     lower.includes('meli.la') ||
     lower.includes('shopee.') ||
     lower.includes('shope.ee') ||
-    lower.includes('amazon.') ||
+    lower.includes('amazon') ||
     lower.includes('amzn.to') ||
     lower.includes('a.co') ||
+    lower.includes('link.amazon') ||
+    lower.includes('amzn.eu') ||
+    lower.includes('amzn.asia') ||
     lower.includes('shein.') ||
     lower.includes('aliexpress.') ||
     lower.includes('s.click') ||
@@ -353,9 +356,12 @@ export function detectMarketplace(url: string): MarketplaceType {
   }
 
   if (
-    lower.includes('amazon.com') ||
+    lower.includes('amazon') ||
     lower.includes('amzn.to') ||
-    lower.includes('a.co')
+    lower.includes('a.co') ||
+    lower.includes('link.amazon') ||
+    lower.includes('amzn.eu') ||
+    lower.includes('amzn.asia')
   ) {
     return 'amazon';
   }
@@ -482,9 +488,12 @@ export function monetizeAmazon(
   const trimmed = rawUrl.trim();
   if (!trimmed) return '';
 
-  // Extract 10-character Amazon ASIN code (e.g. B0CS812XYZ or B09B8VGCR8)
-  const asinMatch = trimmed.match(/(?:\/dp\/|\/gp\/product\/|\/product\/|\/d\/|[?&]asin=)([A-Z0-9]{10})/i);
-  if (asinMatch) {
+  // Extract 10-character Amazon ASIN code (e.g. B0CS812XYZ or B09B8VGCR8) or short code
+  const asinMatch =
+    trimmed.match(/(?:\/dp\/|\/gp\/product\/|\/gp\/aw\/d\/|\/product\/|\/d\/|\/product-reviews\/|[?&]asin=)([A-Z0-9]{9,12})/i) ||
+    trimmed.match(/\/(B0[A-Z0-9]{7,10})(?:[/?&#]|$)/i) ||
+    trimmed.match(/\/([A-Z0-9]{10})(?:[/?&#]|$)/i);
+  if (asinMatch && asinMatch[1]) {
     const asin = asinMatch[1].toUpperCase();
     // Return canonical Amazon SiteStripe product format
     return `https://www.amazon.com.br/dp/${asin}?tag=${encodeURIComponent(associateTag)}&linkCode=${encodeURIComponent(linkCode)}`;
@@ -1132,6 +1141,46 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
   // 2. Server-side environment: Ultra-fast native Node.js HTTP resolution (50-200ms)
   if (!isBrowser) {
     try {
+      // 2.a Amazon shortlinks (amzn.to, a.co, link.amazon, amzn.eu):
+      // Must use manual redirect inspection so we extract the actual destination product URL from Location header,
+      // avoiding Amazon's anti-bot redirect to the generic homepage (https://www.amazon.com/)!
+      if (
+        targetUrl.includes('amzn.to') ||
+        targetUrl.includes('a.co') ||
+        targetUrl.includes('link.amazon') ||
+        targetUrl.includes('amzn.eu') ||
+        targetUrl.includes('amzn.asia')
+      ) {
+        try {
+          const manualController = new AbortController();
+          const manualTimeout = setTimeout(() => manualController.abort(), 2000);
+          const manualRes = await fetch(targetUrl, {
+            method: 'HEAD',
+            redirect: 'manual',
+            signal: manualController.signal,
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            },
+          });
+          clearTimeout(manualTimeout);
+          const loc = manualRes.headers.get('location');
+          if (loc) {
+            const locUrl = new URL(loc, targetUrl).toString();
+            if (
+              locUrl.includes('/dp/') ||
+              locUrl.includes('/gp/') ||
+              locUrl.includes('asin=') ||
+              /B0[A-Z0-9]{7,10}/i.test(locUrl)
+            ) {
+              const clean = locUrl.split('?')[0].split('#')[0];
+              resolvedUrlsCache.set(trimmed, clean);
+              return clean;
+            }
+          }
+        } catch {}
+      }
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2500);
 
@@ -1149,6 +1198,19 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
 
       const finalUrl = res.url || trimmed;
       if (isInvalidOrErrorUrl(finalUrl)) {
+        resolvedUrlsCache.set(trimmed, trimmed);
+        return trimmed;
+      }
+
+      // If Amazon anti-bot redirected to generic homepage, do NOT discard the original shortlink!
+      if (
+        (targetUrl.includes('amazon') || targetUrl.includes('amzn.to') || targetUrl.includes('a.co')) &&
+        (finalUrl.replace(/\/$/, '') === 'https://www.amazon.com' ||
+          finalUrl.replace(/\/$/, '') === 'http://www.amazon.com' ||
+          finalUrl.replace(/\/$/, '') === 'https://www.amazon.com.br' ||
+          finalUrl.replace(/\/$/, '') === 'http://www.amazon.com.br' ||
+          finalUrl.includes('bm-verify'))
+      ) {
         resolvedUrlsCache.set(trimmed, trimmed);
         return trimmed;
       }

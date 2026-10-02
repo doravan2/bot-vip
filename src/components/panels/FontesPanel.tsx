@@ -56,6 +56,33 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
+  const [isSavingToConfig, setIsSavingToConfig] = useState(false);
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
+
+  const handleSaveToConfig = async () => {
+    setIsSavingToConfig(true);
+    setSaveSuccessMsg(null);
+    try {
+      const res = await fetch('/api/configuracoes/salvar-fontes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceRules: sourceGroups }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Erro ao salvar no servidor');
+      }
+      try {
+        localStorage.setItem('bot_vip_sources', JSON.stringify(sourceGroups));
+      } catch {}
+      setSaveSuccessMsg(`✅ ${sourceGroups.length} fontes salvas em Configurações com sucesso!`);
+    } catch (e: any) {
+      setSaveSuccessMsg(`❌ Erro ao salvar fontes: ${e?.message || e}`);
+    } finally {
+      setIsSavingToConfig(false);
+      setTimeout(() => setSaveSuccessMsg(null), 5000);
+    }
+  };
 
   // Multi-select Source groups state
   const [selectedSources, setSelectedSources] = useState<Array<{ name: string; platform: 'WhatsApp' | 'Telegram' }>>([]);
@@ -503,14 +530,48 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={handleOpenCreateModal}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#FF5722] hover:bg-[#f4511e] text-white text-xs font-extrabold shadow-lg shadow-[#FF5722]/30 transition cursor-pointer shrink-0"
-        >
-          <Plus className="w-4 h-4 stroke-[2.5]" />
-          <span>Criar Grupo Fonte Multi-Canal</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleSaveToConfig}
+            disabled={isSavingToConfig}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1e2026] hover:bg-[#282b33] border border-[#2f323e] text-white text-xs font-bold transition shadow-md cursor-pointer"
+            title="Salva permanentemente a lista de fontes nas configurações"
+          >
+            {isSavingToConfig ? (
+              <Loader2 className="w-4 h-4 animate-spin text-[#FF5722]" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            )}
+            <span>{isSavingToConfig ? 'Salvando...' : 'Salvar Fontes em Configurações'}</span>
+          </button>
+
+          <button
+            onClick={handleOpenCreateModal}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#FF5722] hover:bg-[#f4511e] text-white text-xs font-extrabold shadow-lg shadow-[#FF5722]/30 transition cursor-pointer"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>Criar Grupo Fonte Multi-Canal</span>
+          </button>
+        </div>
       </div>
+
+      {/* Save Success Alert Banner */}
+      {saveSuccessMsg && (
+        <div className="p-4 rounded-xl text-xs font-bold flex items-center justify-between gap-3 animate-in fade-in shadow-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{saveSuccessMsg}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSaveSuccessMsg(null)}
+            className="text-neutral-400 hover:text-white"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Fontes Cards List */}
       {sourceGroups.length === 0 ? (

@@ -30,6 +30,7 @@ import type { PendingMeliItem } from './affiliateConfig.ts';
 import { recordConversionLog } from './conversionLogger.ts';
 import { convertMeliLinkViaCookies, getMarketplacesConfig } from './marketplacesService.ts';
 import { fetchProductImageBuffer } from './productImageService.ts';
+import { normalizeImageBuffer } from './imagePipeline.ts';
 import {
   analisar_produto_meli,
   validar_link_mercadolivre,
@@ -45,6 +46,7 @@ import {
 import { isWatermarkActiveForGroup } from './watermarkAiService.ts';
 import { applyChatFilter } from './chatFilterService.ts';
 import { isScheduleActiveNow } from './scheduleService.ts';
+import { isLinkDuplicateInWindow, recordDispatchedLink } from './linkDeduplicationService.ts';
 
 export interface WhatsAppSessionState {
   isConnected: boolean;
@@ -101,6 +103,46 @@ export function unwrapRealMessage(rawMessage: any): any {
   return m;
 }
 
+/**
+ * Finds the exact or best matching group JID from a map of participating groups.
+ * Enforces strict exact matching first, and restricts partial matching for short names (<= 2 chars).
+ */
+export function findMatchingGroupJid(
+  searchName: string,
+  groupMap: Map<string, string>
+): { jid: string; subject: string } | null {
+  if (!searchName || !groupMap || groupMap.size === 0) return null;
+
+  const cleanSearch = searchName
+    .replace(/^\[(FONTE|WhatsApp|Telegram)\]\s*/i, '')
+    .replace(/[^\p{L}\p{N}]/gu, '')
+    .trim()
+    .toLowerCase();
+
+  if (!cleanSearch) return null;
+
+  // 1. EXACT MATCH FIRST across all participating groups (Highest Priority)
+  for (const [jid, subj] of groupMap.entries()) {
+    const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
+    if (cleanSubj === cleanSearch) {
+      return { jid, subject: subj };
+    }
+  }
+
+  // 2. PARTIAL MATCH (Only for search names longer than 2 characters!)
+  // Avoids short numbers/letters like "1", "2", "A", "B" matching every group containing that character!
+  if (cleanSearch.length > 2) {
+    for (const [jid, subj] of groupMap.entries()) {
+      const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
+      if (cleanSubj && (cleanSubj.includes(cleanSearch) || cleanSearch.includes(cleanSubj))) {
+        return { jid, subject: subj };
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function refreshGroupCache(sock: any, force = false): Promise<Map<string, string>> {
   if (!sock) return cachedParticipatingGroups;
 
@@ -149,33 +191,16 @@ export async function refreshGroupCache(sock: any, force = false): Promise<Map<s
         ].flatMap((s) => (s ? s.split(',') : [])).map((s) => s.trim()).filter(Boolean);
 
         for (const srcName of allSourceCandidates) {
-          const cleanSourceName = srcName
-            .replace(/^\[FONTE\]\s*/i, '')
-            .replace(/^\[WhatsApp\]\s*/i, '')
-            .replace(/^\[Telegram\]\s*/i, '')
-            .replace(/[^\p{L}\p{N}]/gu, '')
-            .trim()
-            .toLowerCase();
-
-          if (!cleanSourceName) continue;
-
-          for (const [id, subj] of cachedParticipatingGroups.entries()) {
-            const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-            if (
-              cleanSubj &&
-              (cleanSubj === cleanSourceName ||
-                cleanSubj.includes(cleanSourceName) ||
-                cleanSourceName.includes(cleanSubj))
-            ) {
-              if (!rule.sourceJids) rule.sourceJids = [];
-              if (!rule.sourceJids.includes(id)) {
-                rule.sourceJids.push(id);
-                rulesUpdated = true;
-              }
-              if (!rule.sourceJid) {
-                rule.sourceJid = id;
-                rulesUpdated = true;
-              }
+          const matched = findMatchingGroupJid(srcName, cachedParticipatingGroups);
+          if (matched) {
+            if (!rule.sourceJids) rule.sourceJids = [];
+            if (!rule.sourceJids.includes(matched.jid)) {
+              rule.sourceJids.push(matched.jid);
+              rulesUpdated = true;
+            }
+            if (!rule.sourceJid) {
+              rule.sourceJid = matched.jid;
+              rulesUpdated = true;
             }
           }
         }
@@ -187,31 +212,16 @@ export async function refreshGroupCache(sock: any, force = false): Promise<Map<s
         ].flatMap((t) => (t ? t.split(',') : [])).map((t) => t.trim()).filter(Boolean);
 
         for (const tgtName of allTargetCandidates) {
-          const cleanTargetName = tgtName
-            .replace(/^\[WhatsApp\]\s*/i, '')
-            .replace(/[^\p{L}\p{N}]/gu, '')
-            .trim()
-            .toLowerCase();
-
-          if (!cleanTargetName) continue;
-
-          for (const [id, subj] of cachedParticipatingGroups.entries()) {
-            const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-            if (
-              cleanSubj &&
-              (cleanSubj === cleanTargetName ||
-                cleanSubj.includes(cleanTargetName) ||
-                cleanTargetName.includes(cleanSubj))
-            ) {
-              if (!rule.targetJids) rule.targetJids = [];
-              if (!rule.targetJids.includes(id)) {
-                rule.targetJids.push(id);
-                rulesUpdated = true;
-              }
-              if (!rule.targetJid) {
-                rule.targetJid = id;
-                rulesUpdated = true;
-              }
+          const matched = findMatchingGroupJid(tgtName, cachedParticipatingGroups);
+          if (matched) {
+            if (!rule.targetJids) rule.targetJids = [];
+            if (!rule.targetJids.includes(matched.jid)) {
+              rule.targetJids.push(matched.jid);
+              rulesUpdated = true;
+            }
+            if (!rule.targetJid) {
+              rule.targetJid = matched.jid;
+              rulesUpdated = true;
             }
           }
         }
@@ -771,20 +781,10 @@ async function downloadWhatsAppMediaSafe(
     }
   }
 
-  // 3. Embedded thumbnail fallback
+  // 3. Do NOT return tiny 32px jpegThumbnail as main image because it causes pixelated/horrible quality!
+  // Return null so the pipeline automatically fetches the Full HD (1000px-1500px) official product photo from the offer link!
   if (imageMsg.jpegThumbnail) {
-    try {
-      let thumbBuf: Buffer | null = null;
-      if (Buffer.isBuffer(imageMsg.jpegThumbnail) || imageMsg.jpegThumbnail instanceof Uint8Array) {
-        thumbBuf = Buffer.from(imageMsg.jpegThumbnail);
-      } else if (typeof imageMsg.jpegThumbnail === 'string') {
-        thumbBuf = Buffer.from(imageMsg.jpegThumbnail, 'base64');
-      }
-      if (thumbBuf && thumbBuf.length > 50) {
-        console.log(`[Replica Zap] 📸 Imagem miniatura original do canal extraída (${thumbBuf.length} bytes)!`);
-        return thumbBuf;
-      }
-    } catch {}
+    console.log('[Replica Zap] ℹ️ Apenas miniatura (thumbnail de 32px) disponível no canal. Ignorando para buscar foto oficial Full HD do produto!');
   }
 
   return null;
@@ -869,11 +869,12 @@ async function handleAutomaticReplicaMessage(
 
         if (!cleanRuleName) continue;
 
-        // Exact match check only - prevents capturing unselected groups
+        // Flexible match check (exact or substring) so group titles with emojis or prefixes match configured sources
         if (
-          (cleanSubject && cleanSubject === cleanRuleName) ||
-          (cleanJid && cleanJid === cleanRuleName) ||
-          src === remoteJid
+          (cleanSubject && (cleanSubject === cleanRuleName || cleanSubject.includes(cleanRuleName) || cleanRuleName.includes(cleanSubject))) ||
+          (cleanJid && (cleanJid === cleanRuleName || cleanJid.includes(cleanRuleName) || cleanRuleName.includes(cleanJid))) ||
+          src === remoteJid ||
+          remoteJid.toLowerCase().includes(cleanRuleName)
         ) {
           // Auto-bind JID for instant future matching
           r.sourceJid = remoteJid;
@@ -982,6 +983,37 @@ export async function executeReplicaPipeline(params: {
     }
 
     // =========================================================================
+    // 0.1 ORDEM DE NÃO-REPETIÇÃO / FILTRO ANTI-DUPLICIDADE DE LINKS (24 HORAS)
+    // =========================================================================
+    const dedupCheck = isLinkDuplicateInWindow(rawCaption, matchedRule.targetGroup);
+    if (dedupCheck.isDuplicate) {
+      console.log(
+        `[Anti-Duplicidade 24h] 🚫 Link/Produto de "${sourceDisplayTitle}" já foi enviado há ${dedupCheck.hoursAgo}h (${dedupCheck.lastSentFormatted}). Ignorando envio para evitar repetição.`
+      );
+      addReplicaLog({
+        id: `log-skip-${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString('pt-BR'),
+        sourceGroupName: sourceDisplayTitle,
+        targetGroupName: matchedRule.targetGroup,
+        originalText: rawCaption,
+        finalCaption: '',
+        hasImage: !!imageBuffer,
+        imageSource: 'none',
+        originalUrl: dedupCheck.matchedCodeOrUrl,
+        monetizedUrl: '',
+        marketplace: 'Filtro Anti-Duplicidade 24h',
+        methodUsed: 'Ordem de Não-Repetição 24h',
+        status: 'skipped',
+        errorMessage: `Link enviado há menos de 24h (enviado há ${dedupCheck.hoursAgo}h às ${dedupCheck.lastSentFormatted}).`,
+      });
+      return {
+        success: false,
+        sendResults: [],
+        message: `Link/produto enviado há menos de 24 horas (há ${dedupCheck.hoursAgo}h).`,
+      };
+    }
+
+    // =========================================================================
     // 1. FILTRO PRECOCE DE INSTÂNCIAS / MARKETPLACES ATIVOS (STOP INSTANTÂNEO)
     // =========================================================================
     const earlyMarketplaces = getMarketplacesConfig();
@@ -1012,7 +1044,14 @@ export async function executeReplicaPipeline(params: {
         mpKey = 'mercadolivre';
       } else if (lowerU.includes('shopee.') || lowerU.includes('shope.ee')) {
         mpKey = 'shopee';
-      } else if (lowerU.includes('amazon.') || lowerU.includes('amzn.to') || lowerU.includes('a.co')) {
+      } else if (
+        lowerU.includes('amazon') ||
+        lowerU.includes('amzn.to') ||
+        lowerU.includes('a.co') ||
+        lowerU.includes('link.amazon') ||
+        lowerU.includes('amzn.eu') ||
+        lowerU.includes('amzn.asia')
+      ) {
         mpKey = 'amazon';
       } else if (lowerU.includes('shein.') || lowerU.includes('shein.top') || lowerU.includes('shein.co')) {
         mpKey = 'shein';
@@ -1186,93 +1225,55 @@ export async function executeReplicaPipeline(params: {
     );
 
     // =========================================================
-    // 5. REGRA DE IMAGEM & FILTRO ANTI-MARCA D'ÁGUA DO CONCORRENTE
+    // 5. REGRA DE IMAGEM: PRESERVAR FOTO ORIGINAL OU EXTRAIR DO LINK
     // =========================================================
-    let imageSource: 'source-media' | 'auto-link-photo' | 'none' = imageBuffer ? 'source-media' : 'none';
+    const candidateUrl = finalMonetizedUrl || pureProductUrl || originalUrl || monetizedUrl;
+    let imageSource: 'source-media' | 'auto-link-photo' | 'none' = 'none';
 
-    // Checa se o Filtro Anti-Marca d'Água está ativo especificamente para o GRUPO FONTE (Origem/Concorrente)
-    const isFilterActiveForThisSourceGroup =
-      isWatermarkActiveForGroup(sourceDisplayTitle) ||
-      isWatermarkActiveForGroup(matchedRule.sourceName || '') ||
-      (remoteJid ? isWatermarkActiveForGroup(remoteJid) : false) ||
-      (matchedRule.sourceJid ? isWatermarkActiveForGroup(matchedRule.sourceJid) : false) ||
-      (Array.isArray(matchedRule.sourceNames) && matchedRule.sourceNames.some((s) => isWatermarkActiveForGroup(s))) ||
-      (Array.isArray(matchedRule.sourceJids) && matchedRule.sourceJids.some((j) => isWatermarkActiveForGroup(j)));
+    // 1. Se a mensagem já veio com foto do canal/grupo concorrente:
+    // Normaliza e preserva com prioridade máxima (evita sobrescrever com web scraping arriscado)
+    if (imageBuffer) {
+      const normalizedIncoming = await normalizeImageBuffer(imageBuffer);
+      if (normalizedIncoming) {
+        imageBuffer = normalizedIncoming;
+        imageSource = 'source-media';
+        console.log(`[Replica Pipeline] 📸 Foto original da fonte preservada e normalizada (${imageBuffer.length} bytes JPEG)!`);
+      } else {
+        console.log('[Replica Pipeline] ℹ️ Foto recebida era inválida ou miniatura ilegível. Buscando foto do produto via link...');
+        imageBuffer = null;
+      }
+    }
 
-    if (mensagem_veio_com_foto && imageBuffer && isFilterActiveForThisSourceGroup) {
-      console.log(`[Filtro Anti-Marca d'Água] 🛡️ Filtro ativo para [${sourceDisplayTitle}]! Substituindo imagem com marca d'água por Foto Limpa HD Oficial do produto...`);
-      const candidateUrl = finalMonetizedUrl || pureProductUrl || originalUrl || monetizedUrl;
-      let cleanPhotoFound = false;
-
-      // 1. Buscar foto limpa de alta resolução da API do Mercado Livre
+    // 2. Se a mensagem NÃO continha foto válida, extrai a foto oficial do link do produto
+    if (!imageBuffer && candidateUrl && matchedRule.autoFetchProductImage !== false) {
+      // 2.a Tentar primeiro pela foto obtida da API do Mercado Livre (se houver)
       if (foto_capturada_meli) {
         try {
-          const photoRes = await fetch(foto_capturada_meli, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-          if (photoRes.ok) {
-            const ab = await photoRes.arrayBuffer();
-            imageBuffer = Buffer.from(ab);
+          const photoBuf = await normalizeImageBuffer(foto_capturada_meli);
+          if (photoBuf && photoBuf.length > 500) {
+            imageBuffer = photoBuf;
             imageSource = 'auto-link-photo';
-            cleanPhotoFound = true;
-            console.log(`[Filtro Anti-Marca d'Água] ✅ Marca d'água removida! Foto substituída pela Foto Limpa HD Oficial da API (${imageBuffer.length} bytes)!`);
+            console.log(`[Replica Pipeline] 📸 Foto oficial Full HD (API Mercado Livre) anexada (${imageBuffer.length} bytes JPEG)!`);
           }
         } catch (apiPhotoErr) {
-          console.warn("[Filtro Anti-Marca d'Água] Erro ao baixar foto limpa da API:", apiPhotoErr);
+          console.warn('[Replica Pipeline] Falha ao processar foto da API ML:', apiPhotoErr);
         }
       }
 
-      // 2. Se não achou na API do ML, busca a foto limpa oficial direto da página do produto (Mercado Livre, Shopee, Amazon, AliExpress)
-      if (!cleanPhotoFound && candidateUrl) {
+      // 2.b Se não veio da API ou se for outro marketplace, extrai a foto HD oficial do link via productImageService
+      if (!imageBuffer) {
         try {
           const photoData = await fetchProductImageBuffer(candidateUrl);
           if (photoData?.buffer) {
-            imageBuffer = photoData.buffer;
-            imageSource = 'auto-link-photo';
-            cleanPhotoFound = true;
-            console.log(`[Filtro Anti-Marca d'Água] ✅ Marca d'água removida! Foto substituída pela Foto Limpa HD Oficial do link (${imageBuffer.length} bytes)!`);
+            const normalizedScraped = await normalizeImageBuffer(photoData.buffer);
+            if (normalizedScraped) {
+              imageBuffer = normalizedScraped;
+              imageSource = 'auto-link-photo';
+              console.log(`[Replica Pipeline] 📸 Foto oficial Full HD do produto extraída do link com sucesso (${imageBuffer.length} bytes JPEG): ${photoData.url}`);
+            }
           }
         } catch (pagePhotoErr) {
-          console.warn("[Filtro Anti-Marca d'Água] Erro ao extrair foto limpa do link:", pagePhotoErr);
-        }
-      }
-
-      if (!cleanPhotoFound) {
-        console.log(`[Filtro Anti-Marca d'Água] ℹ️ Mídia da fonte mantida (${imageBuffer.length} bytes).`);
-      }
-    } else if (mensagem_veio_com_foto && imageBuffer) {
-      imageSource = 'source-media';
-      console.log(`[Replica Pipeline] 📸 Mídia original da fonte mantida (${imageBuffer.length} bytes)!`);
-    } else {
-      // Se a mensagem do canal NÃO VEIO com foto, busca a foto limpa oficial do produto
-      if (foto_capturada_meli && matchedRule.autoFetchProductImage !== false) {
-        try {
-          const photoRes = await fetch(foto_capturada_meli, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-          });
-          if (photoRes.ok) {
-            const ab = await photoRes.arrayBuffer();
-            imageBuffer = Buffer.from(ab);
-            imageSource = 'auto-link-photo';
-            console.log(`[Replica Pipeline] 📸 Foto do produto anexada a partir do link Mercado Livre (${imageBuffer.length} bytes)!`);
-          }
-        } catch (photoErr) {
-          console.warn('[Replica Pipeline] Falha ao baixar foto da API do ML, tentando via link...', photoErr);
-        }
-      }
-
-      if (!imageBuffer && matchedRule.autoFetchProductImage !== false) {
-        const candidateUrl = finalMonetizedUrl || pureProductUrl || originalUrl || monetizedUrl;
-        if (candidateUrl) {
-          console.log(`[Replica Pipeline] ⏳ Extraindo foto do produto do link: "${candidateUrl}"...`);
-          try {
-            const photoData = await fetchProductImageBuffer(candidateUrl);
-            if (photoData?.buffer) {
-              imageBuffer = photoData.buffer;
-              imageSource = 'auto-link-photo';
-              console.log(`[Replica Pipeline] 📸 Foto do produto extraída do link com sucesso: ${photoData.url}`);
-            }
-          } catch (imgErr) {
-            console.warn('[Replica Pipeline] Falha ao extrair auto-foto do link:', imgErr);
-          }
+          console.warn('[Replica Pipeline] Erro ao extrair foto HD do link:', pagePhotoErr);
         }
       }
     }
@@ -1331,48 +1332,63 @@ export async function executeReplicaPipeline(params: {
         continue;
       }
 
-      let thisTargetJid = matchedRule.targetJids?.[i] || matchedRule.targetJid;
+      // Garantir que o cache de grupos esteja carregado
+      if (cachedParticipatingGroups.size === 0) {
+        try {
+          await refreshGroupCache(sendSock, false);
+        } catch {}
+      }
+
+      let thisTargetJid = '';
       if (tgt.endsWith('@g.us') || tgt.endsWith('@newsletter')) {
         thisTargetJid = tgt;
       }
+
       const cleanTgt = tgt.replace(/^\[(WhatsApp|Telegram)\]\s*/i, '').replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
 
-      // Buscar JID correspondente nos grupos participando
-      if (!thisTargetJid || (!thisTargetJid.endsWith('@g.us') && !thisTargetJid.endsWith('@newsletter'))) {
-        for (const [jid, subj] of cachedParticipatingGroups.entries()) {
-          const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-          if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
-            thisTargetJid = jid;
-            break;
-          }
+      // 1. Tentar encontrar o JID correspondente no cache de grupos pelo NOME EXATO (ou parcial se name > 2 chars)
+      if (!thisTargetJid && cleanTgt) {
+        const match = findMatchingGroupJid(tgt, cachedParticipatingGroups);
+        if (match) {
+          thisTargetJid = match.jid;
         }
       }
 
-      // Se ainda não encontrou, usa qualquer grupo conectado diferente da origem
-      if (!thisTargetJid && cachedParticipatingGroups.size > 0) {
-        for (const [jid] of cachedParticipatingGroups.entries()) {
-          if (!remoteJid || jid !== remoteJid) {
-            thisTargetJid = jid;
-            break;
-          }
-        }
-      }
-
-      // Fallback em segundo plano (não bloqueante) se o cache estiver completamente vazio
-      if (!thisTargetJid && cachedParticipatingGroups.size === 0) {
+      // 2. Se não encontrou no cache, atualiza o cache diretamente dos servidores do WhatsApp e tenta novamente
+      if (!thisTargetJid && cleanTgt) {
         try {
-          refreshGroupCache(sendSock, false).catch(() => {});
+          const freshGroups = await refreshGroupCache(sendSock, true);
+          const matchFresh = findMatchingGroupJid(tgt, freshGroups);
+          if (matchFresh) {
+            thisTargetJid = matchFresh.jid;
+          }
         } catch {}
+      }
+
+      // 3. Fallback: Se não casou por nome, usa o JID salvo previamente na regra se for um JID válido
+      if (!thisTargetJid) {
+        const savedJid = matchedRule.targetJids?.[i] || matchedRule.targetJid;
+        if (savedJid && (savedJid.endsWith('@g.us') || savedJid.endsWith('@newsletter'))) {
+          thisTargetJid = savedJid;
+        }
       }
 
       if (thisTargetJid) {
         try {
           let sentMsg: any;
           if (imageBuffer) {
-            sentMsg = await sendSock.sendMessage(thisTargetJid, {
-              image: imageBuffer,
-              caption: finalCleanedCopy,
-            });
+            const sendBuffer = await normalizeImageBuffer(imageBuffer);
+            if (sendBuffer) {
+              sentMsg = await sendSock.sendMessage(thisTargetJid, {
+                image: sendBuffer,
+                caption: finalCleanedCopy,
+              });
+            } else {
+              console.warn(`[Replica Pipeline] ⚠️ Imagem corrompida descartada. Enviando para WhatsApp (${tgt}) como texto.`);
+              sentMsg = await sendSock.sendMessage(thisTargetJid, {
+                text: finalCleanedCopy,
+              });
+            }
           } else {
             sentMsg = await sendSock.sendMessage(thisTargetJid, {
               text: finalCleanedCopy,
@@ -1389,8 +1405,18 @@ export async function executeReplicaPipeline(params: {
           console.warn(`[Replica Pipeline] Erro ao enviar no WhatsApp (${tgt}):`, waErr?.message || waErr);
         }
       } else {
-        sendResults.push(`WhatsApp (${tgt}): JID não encontrado`);
+        console.warn(`[Replica Pipeline] ⚠️ Grupo de destino "${tgt}" não foi encontrado nos seus grupos do WhatsApp.`);
+        sendResults.push(`WhatsApp (${tgt}): Grupo de destino não encontrado na conta WhatsApp`);
       }
+    }
+
+    if (atLeastOneSent) {
+      recordDispatchedLink(
+        originalUrl || productCandidates[0] || rawCaption,
+        finalMonetizedUrl || pureProductUrl,
+        mlbId,
+        allTargets.join(', ')
+      );
     }
 
     // =========================================================
@@ -1554,20 +1580,10 @@ export async function sendDirectReplicaDeal(params: {
 
     if (!targetJid.endsWith('@g.us')) {
       const groupsMap = await refreshGroupCache(currentSocket);
-      const cleanSearch = params.targetGroupNameOrJid.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-      let foundJid: string | undefined;
-      let foundSubj: string | undefined;
-      for (const [jid, subj] of groupsMap.entries()) {
-        const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-        if (cleanSubj && (cleanSubj === cleanSearch || cleanSubj.includes(cleanSearch) || cleanSearch.includes(cleanSubj))) {
-          foundJid = jid;
-          foundSubj = subj;
-          break;
-        }
-      }
-      if (foundJid) {
-        targetJid = foundJid;
-        targetSubject = foundSubj || params.targetGroupNameOrJid;
+      const matched = findMatchingGroupJid(params.targetGroupNameOrJid, groupsMap);
+      if (matched) {
+        targetJid = matched.jid;
+        targetSubject = matched.subject;
       } else {
         return {
           success: false,
@@ -1576,15 +1592,11 @@ export async function sendDirectReplicaDeal(params: {
       }
     }
 
-    let finalBuffer = params.imageBuffer;
-    if (!finalBuffer && params.imageUrl) {
-      try {
-        const imgRes = await fetch(params.imageUrl);
-        const arrayBuf = await imgRes.arrayBuffer();
-        finalBuffer = Buffer.from(arrayBuf);
-      } catch (imgErr) {
-        console.warn('Falha ao baixar imagem por URL:', imgErr);
-      }
+    let finalBuffer: Buffer | null = null;
+    if (params.imageBuffer) {
+      finalBuffer = await normalizeImageBuffer(params.imageBuffer);
+    } else if (params.imageUrl) {
+      finalBuffer = await normalizeImageBuffer(params.imageUrl);
     }
 
     // Auto-Foto: Se não tem foto e autoFetchImage for permitido, extrai automaticamente do link da copy
@@ -1597,8 +1609,10 @@ export async function sendDirectReplicaDeal(params: {
         try {
           const photoData = await fetchProductImageBuffer(productUrl);
           if (photoData?.buffer) {
-            finalBuffer = photoData.buffer;
-            console.log(`[Replica Zap] 📸 Imagem gerada pelo link anexada ao disparo direto: ${photoData.url}`);
+            finalBuffer = await normalizeImageBuffer(photoData.buffer);
+            if (finalBuffer) {
+              console.log(`[Replica Zap] 📸 Imagem gerada pelo link anexada ao disparo direto: ${photoData.url}`);
+            }
           }
         } catch (imgErr) {
           console.warn('[Replica Zap] Falha ao extrair auto-foto para disparo direto:', imgErr);

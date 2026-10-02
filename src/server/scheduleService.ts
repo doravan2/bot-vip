@@ -14,13 +14,13 @@ const storageDir = path.resolve(process.cwd(), '.whatsapp_auth');
 const scheduleFilePath = path.resolve(storageDir, 'schedule_settings.json');
 
 const DEFAULT_SCHEDULE_SERVER: DayScheduleServer[] = [
-  { dayId: 'domingo', dayName: 'Domingo', active: true, runAllDay: false, startHour: '08:00', endHour: '00:00' },
-  { dayId: 'segunda', dayName: 'Segunda', active: true, runAllDay: false, startHour: '08:00', endHour: '00:00' },
-  { dayId: 'terca', dayName: 'Terça', active: true, runAllDay: false, startHour: '08:00', endHour: '00:00' },
-  { dayId: 'quarta', dayName: 'Quarta', active: true, runAllDay: false, startHour: '08:00', endHour: '00:00' },
-  { dayId: 'quinta', dayName: 'Quinta', active: true, runAllDay: false, startHour: '08:00', endHour: '00:00' },
-  { dayId: 'sexta', dayName: 'Sexta', active: true, runAllDay: false, startHour: '08:00', endHour: '00:00' },
-  { dayId: 'sabado', dayName: 'Sábado', active: true, runAllDay: false, startHour: '08:00', endHour: '00:00' },
+  { dayId: 'domingo', dayName: 'Domingo', active: true, runAllDay: true, startHour: '00:00', endHour: '23:59' },
+  { dayId: 'segunda', dayName: 'Segunda', active: true, runAllDay: true, startHour: '00:00', endHour: '23:59' },
+  { dayId: 'terca', dayName: 'Terça', active: true, runAllDay: true, startHour: '00:00', endHour: '23:59' },
+  { dayId: 'quarta', dayName: 'Quarta', active: true, runAllDay: true, startHour: '00:00', endHour: '23:59' },
+  { dayId: 'quinta', dayName: 'Quinta', active: true, runAllDay: true, startHour: '00:00', endHour: '23:59' },
+  { dayId: 'sexta', dayName: 'Sexta', active: true, runAllDay: true, startHour: '00:00', endHour: '23:59' },
+  { dayId: 'sabado', dayName: 'Sábado', active: true, runAllDay: true, startHour: '00:00', endHour: '23:59' },
 ];
 
 let cachedSchedule: DayScheduleServer[] = [...DEFAULT_SCHEDULE_SERVER];

@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -113,6 +114,14 @@ import {
   getScheduleSettings,
   saveScheduleSettings,
 } from './src/server/scheduleService.ts';
+import {
+  getTelethonStatus,
+  getTelethonConfig,
+  saveTelethonConfig,
+  startTelethonProcess,
+  stopTelethonProcess,
+  clearTelethonLogs,
+} from './src/server/telethonProcessManager.ts';
 
 dotenv.config();
 
@@ -291,6 +300,34 @@ app.post('/api/backup/import', (req, res) => {
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'Erro ao restaurar backup' });
   }
+});
+
+// Endpoint dedicado para Salvar Fontes em Configurações
+app.post('/api/configuracoes/salvar-fontes', (req, res) => {
+  try {
+    const raw = req.body?.sourceRules || req.body?.rules || req.body;
+    if (!Array.isArray(raw)) {
+      return res.status(400).json({ success: false, error: 'Lista de fontes inválida. Esperado um array de regras.' });
+    }
+    setActiveSourceRules(raw);
+    console.log(`[Configurações] 💾 ${raw.length} fontes e regras de monitoramento salvas com sucesso em Configurações!`);
+    return res.json({
+      success: true,
+      count: raw.length,
+      message: `${raw.length} fontes de monitoramento salvas com sucesso em Configurações!`,
+      sourceRules: getActiveSourceRules(),
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Erro ao salvar fontes em configurações' });
+  }
+});
+
+app.get('/api/configuracoes/fontes', (_req, res) => {
+  return res.json({
+    success: true,
+    count: getActiveSourceRules().length,
+    sourceRules: getActiveSourceRules(),
+  });
 });
 
 app.post('/api/watermark/detect', async (req, res) => {
@@ -1222,6 +1259,109 @@ app.post('/api/marketplaces/test-aliexpress', async (req, res) => {
     return res.json(result);
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });
+  }
+});
+
+// ============================================================================
+// TELEGRAM USERBOT / TELETHON FANTASMA ENDPOINTS
+// ============================================================================
+
+let pendingTelegramCode: string | null = null;
+
+app.get('/api/telegram/userbot/status', (_req, res) => {
+  try {
+    return res.json({ success: true, status: getTelethonStatus() });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Erro ao buscar status do Telethon' });
+  }
+});
+
+app.post('/api/telegram/userbot/config', (req, res) => {
+  try {
+    const updated = saveTelethonConfig(req.body || {});
+    return res.json({ success: true, config: updated, message: 'Configurações do Telethon salvas com sucesso!' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Erro ao salvar configurações do Telethon' });
+  }
+});
+
+app.post('/api/telegram/userbot/start', (_req, res) => {
+  try {
+    const result = startTelethonProcess();
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Erro ao iniciar Telethon' });
+  }
+});
+
+app.post('/api/telegram/userbot/stop', (_req, res) => {
+  try {
+    const result = stopTelethonProcess();
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Erro ao pausar Telethon' });
+  }
+});
+
+app.post('/api/telegram/userbot/send-code', (req, res) => {
+  try {
+    const { codigo, code } = req.body || {};
+    const val = (codigo || code || '').trim();
+    if (!val) {
+      return res.status(400).json({ success: false, error: 'Código de verificação é obrigatório.' });
+    }
+
+    pendingTelegramCode = val;
+
+    // Save code to codigo.txt for python listener
+    try {
+      fs.writeFileSync(path.join(process.cwd(), 'codigo.txt'), val, 'utf-8');
+    } catch {}
+
+    return res.json({
+      success: true,
+      message: `Código ${val} enviado ao Telethon com sucesso!`,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Erro ao enviar código ao Telethon' });
+  }
+});
+
+app.post('/api/telegram/userbot/clear-logs', (_req, res) => {
+  try {
+    clearTelethonLogs();
+    return res.json({ success: true, message: 'Logs do Telethon limpos com sucesso.' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+app.get('/api/telegram/ler-codigo', (_req, res) => {
+  const codeToReturn = pendingTelegramCode;
+  pendingTelegramCode = null;
+  return res.json({ success: true, codigo: codeToReturn });
+});
+
+app.post('/api/internal/telegram-hook', async (req, res) => {
+  try {
+    const { sourceName, rawText, imagePath } = req.body || {};
+    let imageBuffer: Buffer | null = null;
+    if (imagePath && fs.existsSync(imagePath)) {
+      try {
+        imageBuffer = fs.readFileSync(imagePath);
+      } catch {}
+    }
+
+    const result = await handleIncomingTelegramMessage({
+      rawText: rawText || '',
+      imageBuffer,
+      chatId: sourceName || '@telegram_fonte',
+      chatTitle: sourceName || 'Telegram Channel',
+    });
+
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
   }
 });
 

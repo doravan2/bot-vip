@@ -18,6 +18,13 @@ import {
   Code2,
   FileText,
   HelpCircle,
+  Play,
+  Pause,
+  Trash2,
+  ArrowRight,
+  ShieldCheck,
+  Layers,
+  Plus,
 } from 'lucide-react';
 import { GroupChannel, SourceGroup } from '../../types/index.ts';
 
@@ -27,6 +34,11 @@ interface ConfiguracoesPanelProps {
   vipGroupLink?: string;
   onUpdateVipGroupLink?: (link: string) => void;
   onImportComplete?: () => void;
+  onAddSourceGroup?: (source: SourceGroup) => void;
+  onUpdateSourceGroup?: (source: SourceGroup) => void;
+  onToggleSourceGroupStatus?: (id: string) => void;
+  onDeleteSourceGroup?: (id: string) => void;
+  onSaveSourceGroups?: (sources: SourceGroup[]) => void;
 }
 
 export const ConfiguracoesPanel: React.FC<ConfiguracoesPanelProps> = ({
@@ -35,6 +47,11 @@ export const ConfiguracoesPanel: React.FC<ConfiguracoesPanelProps> = ({
   vipGroupLink = '',
   onUpdateVipGroupLink,
   onImportComplete,
+  onAddSourceGroup,
+  onUpdateSourceGroup,
+  onToggleSourceGroupStatus,
+  onDeleteSourceGroup,
+  onSaveSourceGroups,
 }) => {
   const [backupJson, setBackupJson] = useState<string>('Carregando configurações...');
   const [backupObject, setBackupObject] = useState<any>(null);
@@ -42,9 +59,52 @@ export const ConfiguracoesPanel: React.FC<ConfiguracoesPanelProps> = ({
   const [isCopied, setIsCopied] = useState(false);
   const [pastedJson, setPastedJson] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [isSavingFontes, setIsSavingFontes] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [activeView, setActiveView] = useState<'visual' | 'code'>('visual');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Salvar fontes especificamente em configurações
+  const handleSaveFontesInConfig = async () => {
+    setIsSavingFontes(true);
+    setFeedback(null);
+    try {
+      // 1. Salva no endpoint dedicado do backend
+      const res = await fetch('/api/configuracoes/salvar-fontes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceRules: sourceGroups }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Erro ao salvar fontes no servidor');
+      }
+
+      // 2. Salva no localStorage para sincronização persistente
+      try {
+        localStorage.setItem('bot_vip_sources', JSON.stringify(sourceGroups));
+      } catch {}
+
+      if (onSaveSourceGroups) {
+        onSaveSourceGroups(sourceGroups);
+      }
+
+      // 3. Atualiza o backup consolidado
+      await loadFullConfiguration();
+
+      setFeedback({
+        type: 'success',
+        message: `✅ ${sourceGroups.length} fontes e regras de monitoramento salvas com sucesso em Configurações!`,
+      });
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: `Erro ao salvar fontes em configurações: ${err?.message || err}`,
+      });
+    } finally {
+      setIsSavingFontes(false);
+    }
+  };
 
   // Carrega todas as configurações de todas as abas
   const loadFullConfiguration = async () => {
@@ -279,6 +339,194 @@ export const ConfiguracoesPanel: React.FC<ConfiguracoesPanelProps> = ({
           <span>{feedback.message}</span>
         </div>
       )}
+
+      {/* SEÇÃO PRINCIPAL: GERENCIADOR E SALVAMENTO DE FONTES EM CONFIGURAÇÕES */}
+      <div className="p-6 sm:p-7 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#22242a]">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#FF5722]/15 text-[#FF5722] flex items-center justify-center font-bold">
+                <Radio className="w-4 h-4" />
+              </div>
+              <h3 className="text-base font-black text-white tracking-tight flex items-center gap-2.5">
+                <span>Fontes & Regras de Reenvio em Configurações</span>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#FF5722]/15 text-[#FF5722] border border-[#FF5722]/30">
+                  {sourceGroups.length} {sourceGroups.length === 1 ? 'REGRA' : 'REGRAS'}
+                </span>
+              </h3>
+            </div>
+            <p className="text-xs text-neutral-400">
+              Gerencie e salve todas as fontes de grupos concorrentes e direcionamento para os seus grupos VIP diretamente nas configurações do sistema.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSaveFontesInConfig}
+            disabled={isSavingFontes}
+            className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-[#FF5722] hover:bg-[#e64a19] text-white text-xs font-black transition shadow-lg shadow-[#FF5722]/20 cursor-pointer self-start sm:self-auto shrink-0"
+          >
+            {isSavingFontes ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <Check className="w-4 h-4 stroke-[3]" />
+            )}
+            <span>{isSavingFontes ? 'Salvando Fontes...' : 'Salvar Fontes em Configurações'}</span>
+          </button>
+        </div>
+
+        {/* Resumo Rápido das Fontes */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="p-3 rounded-xl bg-[#18191d] border border-[#262832]">
+            <span className="text-[10px] font-mono uppercase text-neutral-400 font-bold block">Total de Fontes</span>
+            <span className="text-lg font-black text-white">{sourceGroups.length}</span>
+          </div>
+          <div className="p-3 rounded-xl bg-[#18191d] border border-[#262832]">
+            <span className="text-[10px] font-mono uppercase text-neutral-400 font-bold block">Monitorando</span>
+            <span className="text-lg font-black text-emerald-400">
+              {sourceGroups.filter((s) => s.status !== 'paused').length}
+            </span>
+          </div>
+          <div className="p-3 rounded-xl bg-[#18191d] border border-[#262832]">
+            <span className="text-[10px] font-mono uppercase text-neutral-400 font-bold block">Pausadas</span>
+            <span className="text-lg font-black text-amber-400">
+              {sourceGroups.filter((s) => s.status === 'paused').length}
+            </span>
+          </div>
+          <div className="p-3 rounded-xl bg-[#18191d] border border-[#262832]">
+            <span className="text-[10px] font-mono uppercase text-neutral-400 font-bold block">Destinos VIP</span>
+            <span className="text-lg font-black text-sky-400">
+              {new Set(sourceGroups.flatMap((s) => s.targetGroups || [s.targetGroup])).size}
+            </span>
+          </div>
+        </div>
+
+        {/* Lista de Regras de Fontes */}
+        {sourceGroups.length === 0 ? (
+          <div className="p-8 rounded-xl bg-[#18191d] border border-dashed border-[#2d303b] text-center space-y-2">
+            <Radio className="w-8 h-8 text-neutral-600 mx-auto" />
+            <p className="text-xs font-bold text-neutral-300">Nenhuma fonte cadastrada nas configurações.</p>
+            <p className="text-[11px] text-neutral-500">
+              Acesse a aba "Fontes" no menu lateral para adicionar os grupos concorrentes que você deseja monitorar.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+            {sourceGroups.map((rule, idx) => {
+              const isPaused = rule.status === 'paused';
+              const srcNames = rule.sourceNames && rule.sourceNames.length > 0 ? rule.sourceNames : [rule.sourceName];
+              const tgtNames = rule.targetGroups && rule.targetGroups.length > 0 ? rule.targetGroups : [rule.targetGroup];
+
+              return (
+                <div
+                  key={rule.id || `rule-${idx}`}
+                  className={`p-4 rounded-xl border transition ${
+                    isPaused
+                      ? 'bg-[#15161a] border-[#22242a] opacity-75'
+                      : 'bg-[#18191e] border-[#2a2c36] hover:border-[#383a48]'
+                  }`}
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-2 min-w-0 flex-1">
+                      {/* Fontes Origem */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-mono font-bold uppercase text-neutral-400 mr-1">
+                          FONTE:
+                        </span>
+                        {srcNames.map((s, sIdx) => (
+                          <span
+                            key={sIdx}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-[#22242c] text-white border border-[#323542]"
+                          >
+                            <Radio className="w-3 h-3 text-[#FF5722]" />
+                            <span className="truncate max-w-[200px]">{s}</span>
+                          </span>
+                        ))}
+                      </div>
+
+                      {/* Destinos */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] font-mono font-bold uppercase text-neutral-400 mr-1 flex items-center gap-1">
+                          <ArrowRight className="w-3 h-3 text-sky-400" />
+                          <span>DESTINO:</span>
+                        </span>
+                        {tgtNames.map((t, tIdx) => (
+                          <span
+                            key={tIdx}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-sky-500/10 text-sky-300 border border-sky-500/25"
+                          >
+                            <span className="truncate max-w-[200px]">{t}</span>
+                          </span>
+                        ))}
+                      </div>
+
+                      {/* Opções e Tags */}
+                      <div className="flex flex-wrap items-center gap-2 pt-1 text-[10px] font-mono text-neutral-400">
+                        {rule.autoFetchProductImage !== false && (
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            FOTO LIMPA HD
+                          </span>
+                        )}
+                        {rule.validateMeliStock !== false && (
+                          <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                            ESTOQUE MERCADO LIVRE
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Ações da Regra */}
+                    <div className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0">
+                      {onToggleSourceGroupStatus && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleSourceGroupStatus(rule.id)}
+                          title={isPaused ? 'Ativar monitoramento' : 'Pausar monitoramento'}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                            isPaused
+                              ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+                              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
+                          }`}
+                        >
+                          {isPaused ? <Play className="w-3 h-3 fill-current" /> : <Pause className="w-3 h-3 fill-current" />}
+                          <span>{isPaused ? 'Pausado' : 'Ativo'}</span>
+                        </button>
+                      )}
+
+                      {onDeleteSourceGroup && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm(`Deseja excluir a regra de fontes [${rule.sourceName}]?`)) {
+                              onDeleteSourceGroup(rule.id);
+                            }
+                          }}
+                          title="Excluir regra de fontes"
+                          className="p-1.5 rounded-lg text-neutral-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="pt-2 flex items-center justify-between text-[11px] text-neutral-400 font-mono">
+          <span>* As fontes salvas aqui permanecem gravadas permanentemente no arquivo do servidor.</span>
+          <button
+            type="button"
+            onClick={handleSaveFontesInConfig}
+            disabled={isSavingFontes}
+            className="text-[#FF5722] hover:text-[#ff7043] font-bold underline cursor-pointer"
+          >
+            {isSavingFontes ? 'Gravando alterações...' : 'Confirmar & Gravar no Disco'}
+          </button>
+        </div>
+      </div>
 
       {/* PAINEL DE AÇÕES: BAIXAR E EXPORTAR JSON */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

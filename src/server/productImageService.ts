@@ -7,6 +7,7 @@
  */
 
 import { spawn } from 'child_process';
+import { normalizeImageBuffer } from './imagePipeline.ts';
 
 // In-memory cache for fast repeated dispatches
 const imageCache = new Map<
@@ -17,6 +18,55 @@ const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 const BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+/**
+ * Upgrades e-commerce product image URLs from thumbnails/low-res to 1000px-1500px Full HD resolution
+ */
+export function upgradeImageUrlToHighRes(url: string): string {
+  if (!url || typeof url !== 'string') return url;
+  let clean = url.trim();
+
+  // 1. Mercado Livre: Upgrade mlstatic.com images
+  // e.g. ...-I.jpg, -V.jpg, -O.jpg, -V.webp -> -F.jpg (Full HD 1200px+)
+  // Also D_NQ_NP_ -> D_NQ_NP_2X_
+  if (clean.includes('mlstatic.com')) {
+    clean = clean.replace(/-[IVO]\.(jpg|jpeg|webp|png)$/i, '-F.jpg');
+    clean = clean.replace(/D_NQ_NP_(?!2X_)/g, 'D_NQ_NP_2X_');
+  }
+
+  // 2. Amazon: Upgrade m.media-amazon.com or images-na.ssl-images-amazon.com images
+  // e.g. ..._AC_SX100_.jpg, ..._AC_UL320_.jpg, ..._SL160_.jpg -> ..._AC_SL1500_.jpg
+  if (clean.includes('amazon.com') || clean.includes('media-amazon.com')) {
+    clean = clean.replace(/\._AC_[A-Z0-9_,]+_\./gi, '._AC_SL1500_.');
+    clean = clean.replace(/\._[A-Z0-9_,]+_\./gi, '._AC_SL1500_.');
+  }
+
+  // 3. Shopee: Upgrade down-br.img.susercontent.com or cf.shopee.com.br
+  // e.g. .../file/sg-11134201-7rd5b-m232123456_tn -> .../file/sg-11134201-7rd5b-m232123456
+  if (clean.includes('susercontent.com') || clean.includes('shopee.com')) {
+    clean = clean.replace(/_tn(\.(jpg|jpeg|webp|png))?$/i, '');
+    clean = clean.replace(/_tn$/i, '');
+  }
+
+  // 4. AliExpress: Upgrade ae01.alicdn.com or aliexpress-media.com
+  // e.g. .../kf/S12345678.jpg_220x220.jpg -> .../kf/S12345678.jpg
+  if (clean.includes('alicdn.com') || clean.includes('aliexpress-media.com')) {
+    clean = clean.replace(/_\d+x\d+.*$/i, '');
+  }
+
+  // 5. SHEIN: Upgrade img.ltwebstatic.com
+  if (clean.includes('ltwebstatic.com')) {
+    clean = clean.replace(/_\d+x\d+\./gi, '.');
+    clean = clean.replace(/_thumbnail\./gi, '.');
+  }
+
+  // 6. Magalu: Upgrade luizalabs / magazineluiza
+  if (clean.includes('magazineluiza.com') || clean.includes('luizalabs.com')) {
+    clean = clean.replace(/\/\d+x\d+\//gi, '/800x800/');
+  }
+
+  return clean;
+}
 
 /**
  * Extracts AliExpress product image using Python CookieJar with canonical item URL
@@ -178,7 +228,7 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
     ) {
       let imgUrl = ogMatch[1].replace(/&amp;/g, '&');
       if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
-      return imgUrl;
+      return upgradeImageUrlToHighRes(imgUrl);
     }
 
     // 2. Twitter image tag
@@ -189,7 +239,7 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
     if (twitterMatch && twitterMatch[1]) {
       let imgUrl = twitterMatch[1].replace(/&amp;/g, '&');
       if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
-      return imgUrl;
+      return upgradeImageUrlToHighRes(imgUrl);
     }
 
     // 3. Mercado Livre static image pattern (http2.mlstatic.com/D_NQ_NP_...)
@@ -202,21 +252,23 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
         /https?:\/\/[^\s\"']+mlstatic\.com\/D_NQ_NP_[^\s\"']+\.(?:webp|jpg|jpeg|png)/i
       );
       if (mlMatch) {
-        return mlMatch[0];
+        return upgradeImageUrlToHighRes(mlMatch[0]);
       }
     }
 
     // 4. Amazon product image patterns (m.media-amazon.com or images-na.ssl-images-amazon.com)
     if (
-      cleanUrl.includes('amazon.') ||
+      cleanUrl.includes('amazon') ||
       cleanUrl.includes('amzn.to') ||
-      finalUrl.includes('amazon.')
+      cleanUrl.includes('a.co') ||
+      cleanUrl.includes('link.amazon') ||
+      finalUrl.includes('amazon')
     ) {
       const amzMatch = html.match(
         /https?:\/\/(?:m\.media-amazon\.com|images-na\.ssl-images-amazon\.com)\/images\/I\/[a-zA-Z0-9%_-]+\.(?:jpg|png|webp)/i
       );
       if (amzMatch) {
-        return amzMatch[0];
+        return upgradeImageUrlToHighRes(amzMatch[0]);
       }
     }
 
@@ -230,7 +282,7 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
         /https?:\/\/(?:down-br\.img\.susercontent\.com|cf\.shopee\.com\.br)\/file\/[a-zA-Z0-9_-]+/i
       );
       if (shpMatch) {
-        return shpMatch[0];
+        return upgradeImageUrlToHighRes(shpMatch[0]);
       }
     }
 
@@ -240,20 +292,20 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
         /https?:\/\/[^\s\"'<>]+\.(?:alicdn|aliexpress-media)\.com\/kf\/[^\s\"'<>]+\.(?:jpg|png|webp|jpeg)/i
       );
       if (aliMatch) {
-        return aliMatch[0];
+        return upgradeImageUrlToHighRes(aliMatch[0]);
       }
     }
 
     // 7. JSON-LD Schema.org image
     const jsonLdMatch = html.match(/"image":\s*(?:\[\s*)?"(https?:[^"]+)"/i);
     if (jsonLdMatch && jsonLdMatch[1]) {
-      return jsonLdMatch[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
+      return upgradeImageUrlToHighRes(jsonLdMatch[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/'));
     }
   } catch {
     // If standard fetch fails (e.g. redirect error or timeout), try CookieJar fallback
     if (isAliExpress) {
       const fallbackImage = await fetchAliExpressImage(cleanUrl);
-      if (fallbackImage) return fallbackImage;
+      if (fallbackImage) return upgradeImageUrlToHighRes(fallbackImage);
     }
   }
 
@@ -261,7 +313,7 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
 }
 
 /**
- * Downloads the product image and returns a Buffer ready for WhatsApp dispatch
+ * Downloads the product image and returns a pristine, normalized baseline JPEG Buffer ready for WhatsApp/Telegram dispatch
  */
 export async function fetchProductImageBuffer(
   productUrl: string
@@ -275,54 +327,73 @@ export async function fetchProductImageBuffer(
     return { buffer: cached.buffer, url: cached.url, mimeType: cached.mimeType };
   }
 
-  const imageUrl = await fetchProductImageUrl(cleanUrl);
-  if (!imageUrl) return null;
+  const rawImageUrl = await fetchProductImageUrl(cleanUrl);
+  if (!rawImageUrl) return null;
+  const upgradedImageUrl = upgradeImageUrlToHighRes(rawImageUrl);
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
+  // Helper to attempt downloading and validating a candidate image URL
+  const tryDownloadAndNormalize = async (targetImgUrl: string): Promise<Buffer | null> => {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
 
-    const res = await fetch(imageUrl, {
-      headers: {
-        'User-Agent': BROWSER_USER_AGENT,
-        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+      const res = await fetch(targetImgUrl, {
+        headers: {
+          'User-Agent': BROWSER_USER_AGENT,
+          Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (!res.ok) {
+      if (!res.ok) return null;
+
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('text/html') || ct.includes('application/json')) {
+        return null;
+      }
+
+      const arrayBuffer = await res.arrayBuffer();
+      const rawBuf = Buffer.from(arrayBuffer);
+      if (rawBuf.length < 200) return null;
+
+      // Normalize through sharp to guarantee 100% compliant baseline JPEG
+      return await normalizeImageBuffer(rawBuf);
+    } catch {
       return null;
     }
+  };
 
-    const contentType = res.headers.get('content-type') || 'image/jpeg';
-    const arrayBuffer = await res.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+  // 1. Try high-res upgraded URL first
+  let normalized = await tryDownloadAndNormalize(upgradedImageUrl);
+  let finalUrlUsed = upgradedImageUrl;
 
-    // Minimum size check (must be at least 500 bytes to be a valid image)
-    if (buffer.length < 500) {
-      return null;
-    }
+  // 2. If upgraded URL failed, fallback to the raw original image URL
+  if (!normalized && upgradedImageUrl !== rawImageUrl) {
+    normalized = await tryDownloadAndNormalize(rawImageUrl);
+    finalUrlUsed = rawImageUrl;
+  }
 
-    const result = {
-      buffer,
-      url: imageUrl,
-      mimeType: contentType.split(';')[0],
-      timestamp: Date.now(),
-    };
-
-    // Cache the result (keep max 150 items)
-    if (imageCache.size > 150) {
-      const firstKey = imageCache.keys().next().value;
-      if (firstKey) imageCache.delete(firstKey);
-    }
-    imageCache.set(cleanUrl, result);
-
-    console.log(
-      `[ProductImageService] 📸 Foto do produto baixada com sucesso (${buffer.length} bytes): "${imageUrl}"`
-    );
-    return result;
-  } catch {
+  if (!normalized) {
     return null;
   }
+
+  const result = {
+    buffer: normalized,
+    url: finalUrlUsed,
+    mimeType: 'image/jpeg',
+    timestamp: Date.now(),
+  };
+
+  // Cache the result (keep max 150 items)
+  if (imageCache.size > 150) {
+    const firstKey = imageCache.keys().next().value;
+    if (firstKey) imageCache.delete(firstKey);
+  }
+  imageCache.set(cleanUrl, result);
+
+  console.log(
+    `[ProductImageService] 📸 Foto oficial do produto normalizada com sucesso (${normalized.length} bytes JPEG): "${finalUrlUsed}"`
+  );
+  return result;
 }

@@ -372,11 +372,18 @@ export async function cleanAndMonetizeCompetitorMessage(
         ) {
           detectedMp = 'shopee';
         } else if (
-          resolvedLower.includes('amazon.') ||
+          resolvedLower.includes('amazon') ||
           resolvedLower.includes('amzn.to') ||
-          lower.includes('amazon.') ||
+          resolvedLower.includes('a.co') ||
+          resolvedLower.includes('link.amazon') ||
+          resolvedLower.includes('amzn.eu') ||
+          resolvedLower.includes('amzn.asia') ||
+          lower.includes('amazon') ||
           lower.includes('amzn.to') ||
-          lower.includes('a.co')
+          lower.includes('a.co') ||
+          lower.includes('link.amazon') ||
+          lower.includes('amzn.eu') ||
+          lower.includes('amzn.asia')
         ) {
           detectedMp = 'amazon';
         } else if (

@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import { normalizeImageBuffer } from './imagePipeline.ts';
 
 export interface TelegramBotInfo {
   id: number;
@@ -477,6 +478,98 @@ export function removeTelegramChannel(id: string): TelegramChannelItem[] {
 }
 
 /**
+ * Detects actual image MIME type and file extension from buffer magic bytes
+ */
+function detectImageMime(buffer: Buffer): { mime: string; ext: string; isValid: boolean } {
+  if (!buffer || buffer.length < 16) {
+    return { mime: 'application/octet-stream', ext: 'bin', isValid: false };
+  }
+  // Check if buffer is HTML/text error page (Cloudflare / 403 / 503)
+  const headerSlice = buffer.subarray(0, 80).toString('utf-8').trim().toLowerCase();
+  if (
+    headerSlice.startsWith('<!doctype') ||
+    headerSlice.startsWith('<html') ||
+    headerSlice.startsWith('<?xml') ||
+    headerSlice.startsWith('{') ||
+    headerSlice.includes('<title>403') ||
+    headerSlice.includes('<title>503') ||
+    headerSlice.includes('<title>access denied')
+  ) {
+    return { mime: 'text/html', ext: 'html', isValid: false };
+  }
+
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { mime: 'image/jpeg', ext: 'jpg', isValid: true };
+  }
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return { mime: 'image/png', ext: 'png', isValid: true };
+  }
+  // WebP: RIFF .... WEBP
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return { mime: 'image/webp', ext: 'webp', isValid: true };
+  }
+  // GIF: GIF8
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
+    return { mime: 'image/gif', ext: 'gif', isValid: true };
+  }
+
+  return { mime: 'image/jpeg', ext: 'jpg', isValid: true };
+}
+
+/**
+ * Normalizes any image buffer (WebP, PNG, AVIF, TIFF, or non-standard JPEG) into a
+ * clean, 100% compliant baseline JPEG that Telegram Bot API sendPhoto will process successfully.
+ */
+async function ensureTelegramPhotoBuffer(rawBuffer: Buffer): Promise<{ buffer: Buffer; mime: string; ext: string } | null> {
+  if (!rawBuffer || rawBuffer.length < 16) return null;
+
+  // Check for HTML/text error response from CDN or proxy
+  const headerSlice = rawBuffer.subarray(0, 80).toString('utf-8').trim().toLowerCase();
+  if (
+    headerSlice.startsWith('<!doctype') ||
+    headerSlice.startsWith('<html') ||
+    headerSlice.startsWith('<?xml') ||
+    headerSlice.startsWith('{') ||
+    headerSlice.includes('<title>403') ||
+    headerSlice.includes('<title>503') ||
+    headerSlice.includes('access denied')
+  ) {
+    return null;
+  }
+
+  try {
+    const sharpModule = await import('sharp');
+    const sharp = sharpModule.default || sharpModule;
+    const normalized = await sharp(rawBuffer)
+      .rotate() // Auto-orient based on EXIF
+      .flatten({ background: '#ffffff' }) // Ensure transparent channels (WebP/PNG) have clean white background
+      .jpeg({ quality: 92, mozjpeg: true })
+      .toBuffer();
+
+    return {
+      buffer: normalized,
+      mime: 'image/jpeg',
+      ext: 'jpg',
+    };
+  } catch {
+    // If sharp could not decode, check magic bytes fallback
+    const info = detectImageMime(rawBuffer);
+    if (info.isValid) {
+      return { buffer: rawBuffer, mime: info.mime, ext: info.ext };
+    }
+    return null;
+  }
+}
+
+/**
  * Sends a text message or photo to a Telegram channel/group/chat (supports image URL or Buffer)
  */
 export async function sendTelegramMessage(
@@ -500,35 +593,23 @@ export async function sendTelegramMessage(
     // Helper to safely truncate caption for photo (Telegram limit is 1024 chars)
     const safeCaption = text.length > 1020 ? text.substring(0, 1016) + '...' : text;
 
-    // 1. If HTTP URL provided, try downloading it to a buffer first to avoid Telegram 403 blocks
-    let photoBuffer: Buffer | null = Buffer.isBuffer(imageUrlOrBuffer) ? imageUrlOrBuffer : null;
-
-    if (!photoBuffer && typeof imageUrlOrBuffer === 'string' && imageUrlOrBuffer.startsWith('http')) {
+    // 1. Normalize image if provided (handles Buffer, base64 data URL, or HTTP URL)
+    let photoJpgBuffer: Buffer | null = null;
+    if (imageUrlOrBuffer) {
       try {
-        const fetchRes = await fetch(imageUrlOrBuffer, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          },
-        });
-        if (fetchRes.ok) {
-          const ab = await fetchRes.arrayBuffer();
-          if (ab.byteLength > 100) {
-            photoBuffer = Buffer.from(ab);
-          }
-        }
-      } catch (fetchErr) {
-        console.warn('[TelegramService] Falha ao pré-baixar imagem para envio:', fetchErr);
+        photoJpgBuffer = await normalizeImageBuffer(imageUrlOrBuffer);
+      } catch (normErr) {
+        console.warn('[TelegramService] Erro ao normalizar buffer de imagem:', normErr);
       }
     }
 
-    // 2. Try sending Photo if Buffer available
-    if (photoBuffer && Buffer.isBuffer(photoBuffer)) {
+    // 2. Send via sendPhoto if valid normalized baseline JPEG exists
+    if (photoJpgBuffer && Buffer.isBuffer(photoJpgBuffer) && photoJpgBuffer.length > 200) {
       try {
         const formData = new FormData();
         formData.append('chat_id', targetChat);
         formData.append('caption', safeCaption);
-        const blob = new Blob([new Uint8Array(photoBuffer)], { type: 'image/jpeg' });
+        const blob = new Blob([new Uint8Array(photoJpgBuffer)], { type: 'image/jpeg' });
         formData.append('photo', blob, 'photo.jpg');
 
         const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
@@ -539,37 +620,29 @@ export async function sendTelegramMessage(
         if (data.ok && data.result) {
           return { success: true, messageId: data.result.message_id };
         } else {
-          console.warn('[TelegramService] Telegram recusou foto via buffer:', data.description);
+          console.warn('[TelegramService] Aviso Telegram sendPhoto:', data.description);
+          // If error was caption too long, try with truncated caption
+          if (data.description && data.description.includes('caption is too long')) {
+            const shorterFormData = new FormData();
+            shorterFormData.append('chat_id', targetChat);
+            shorterFormData.append('caption', text.slice(0, 900) + '...');
+            shorterFormData.append('photo', blob, 'photo.jpg');
+            const retryRes = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+              method: 'POST',
+              body: shorterFormData,
+            });
+            const retryData: any = await retryRes.json();
+            if (retryData.ok && retryData.result) {
+              return { success: true, messageId: retryData.result.message_id };
+            }
+          }
         }
-      } catch (bufErr) {
-        console.warn('[TelegramService] Erro ao enviar buffer de foto no Telegram, tentando texto:', bufErr);
+      } catch (bufErr: any) {
+        console.warn('[TelegramService] Falha ao enviar photo no Telegram:', bufErr?.message || bufErr);
       }
     }
 
-    // 3. Try sending Photo if HTTP URL provided (fallback if buffer download failed)
-    if (typeof imageUrlOrBuffer === 'string' && imageUrlOrBuffer.startsWith('http')) {
-      try {
-        const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: targetChat,
-            photo: imageUrlOrBuffer,
-            caption: safeCaption,
-          }),
-        });
-        const data: any = await res.json();
-        if (data.ok && data.result) {
-          return { success: true, messageId: data.result.message_id };
-        } else {
-          console.warn('[TelegramService] Telegram recusou foto via URL:', data.description);
-        }
-      } catch (urlErr) {
-        console.warn('[TelegramService] Erro ao enviar foto por URL no Telegram, tentando texto:', urlErr);
-      }
-    }
-
-    // 4. Fallback: Text send via sendMessage
+    // 3. Fallback: Text send via sendMessage if no photo or photo send failed
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

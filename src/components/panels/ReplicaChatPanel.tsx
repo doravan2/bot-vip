@@ -38,6 +38,8 @@ import {
   Square,
   Lock,
   Unlock,
+  ChevronRight,
+  ArrowLeft,
 } from 'lucide-react';
 import { GroupChannel } from '../../types/index.ts';
 import { DEFAULT_VIP_GROUP_LINK } from '../../utils/affiliateEngine.ts';
@@ -74,6 +76,16 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
 }) => {
   // Tabs: 'rules' | 'connections' | 'telegram_fantasma' | 'watermark' | 'chat_filter'
   const [activeTab, setActiveTab] = useState<'rules' | 'connections' | 'telegram_fantasma' | 'watermark' | 'chat_filter'>('rules');
+  const [fullScreenTab, setFullScreenTab] = useState<'rules' | 'connections' | 'telegram_fantasma' | 'watermark' | 'chat_filter' | null>(null);
+
+  const handleOpenOption = (tab: 'rules' | 'connections' | 'telegram_fantasma' | 'watermark' | 'chat_filter') => {
+    setActiveTab(tab);
+    setFullScreenTab(tab);
+    if (tab === 'connections') fetchMarketplacesConfig();
+    if (tab === 'telegram_fantasma') fetchTelethonStatus();
+    if (tab === 'watermark') fetchWatermarkConfig();
+    if (tab === 'chat_filter') fetchChatFilterConfig();
+  };
 
   // Telethon Modo Fantasma State
   const [telethonForm, setTelethonForm] = useState({
@@ -952,125 +964,274 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
         )}
       </div>
 
-      {/* Tabs Navigation */}
-      <div className="flex items-center gap-2 border-b border-[#22242a] pb-2 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab('rules')}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
-            activeTab === 'rules'
-              ? 'bg-[#FF5722] text-white shadow-lg shadow-[#FF5722]/20'
-              : 'bg-[#141517] text-neutral-400 hover:text-white hover:bg-[#1a1b1f]'
-          }`}
+      {/* Stacked Options List (Deitadas uma encima da outra) */}
+      <div className="space-y-4 max-w-5xl">
+        {/* Option 1: Regras & Disparos */}
+        <div
+          onClick={() => handleOpenOption('rules')}
+          className="p-6 rounded-2xl bg-[#141517] hover:bg-[#18191d] border border-[#22242a] hover:border-[#FF5722]/50 transition-all cursor-pointer shadow-xl group flex flex-col sm:flex-row sm:items-center justify-between gap-4"
         >
-          <Sliders className="w-4 h-4" />
-          <span>Regras & Disparos</span>
-        </button>
+          <div className="flex items-start sm:items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-[#FF5722]/15 border border-[#FF5722]/30 flex items-center justify-center text-[#FF5722] shrink-0 group-hover:scale-105 transition-transform shadow-md">
+              <Sliders className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-base font-extrabold text-white group-hover:text-[#FF5722] transition">
+                  Regras & Disparos
+                </h3>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#FF5722]/20 text-[#FF5722] border border-[#FF5722]/30">
+                  Parâmetros Globais
+                </span>
+              </div>
+              <p className="text-xs text-neutral-400 max-w-xl leading-relaxed">
+                Configure a substituição automática do link VIP, regras de NLP para remoção de concorrentes, busca de fotos e simulador de disparos.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#1c1d22] group-hover:bg-[#FF5722] text-xs font-bold text-[#FF5722] group-hover:text-white transition-colors self-end sm:self-center shrink-0 border border-[#262832] group-hover:border-[#FF5722]">
+            <span>Acessar em Tela Inteira</span>
+            <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+          </div>
+        </div>
 
-        <button
-          onClick={() => {
-            setActiveTab('connections');
-            fetchMarketplacesConfig();
-          }}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
-            activeTab === 'connections'
-              ? 'bg-[#FF5722] text-white shadow-lg shadow-[#FF5722]/20'
-              : 'bg-[#141517] text-neutral-400 hover:text-white hover:bg-[#1a1b1f]'
-          }`}
+        {/* Option 2: Marketplaces Connections */}
+        <div
+          onClick={() => handleOpenOption('connections')}
+          className="p-6 rounded-2xl bg-[#141517] hover:bg-[#18191d] border border-[#22242a] hover:border-[#FF5722]/50 transition-all cursor-pointer shadow-xl group flex flex-col sm:flex-row sm:items-center justify-between gap-4"
         >
-          <Radio className="w-4 h-4" />
-          <span>Marketplaces Connections</span>
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-black/40 text-white border border-white/10">
-            {activeCount}/6 ativos
-          </span>
-        </button>
+          <div className="flex items-start sm:items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 group-hover:scale-105 transition-transform shadow-md">
+              <Radio className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-base font-extrabold text-white group-hover:text-[#FF5722] transition">
+                  Marketplaces Connections
+                </h3>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-black/40 text-white border border-white/10">
+                  {activeCount}/6 ativos
+                </span>
+              </div>
+              <p className="text-xs text-neutral-400 max-w-xl leading-relaxed">
+                Ative ou desative instâncias de processamento de links do Mercado Livre, Amazon, Shopee, AliExpress, SHEIN e Temu.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#1c1d22] group-hover:bg-[#FF5722] text-xs font-bold text-[#FF5722] group-hover:text-white transition-colors self-end sm:self-center shrink-0 border border-[#262832] group-hover:border-[#FF5722]">
+            <span>Acessar em Tela Inteira</span>
+            <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+          </div>
+        </div>
 
-        <button
-          onClick={() => {
-            setActiveTab('telegram_fantasma');
-            fetchTelethonStatus();
-          }}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
-            activeTab === 'telegram_fantasma'
-              ? 'bg-[#0088cc] text-white shadow-lg shadow-[#0088cc]/30'
-              : 'bg-[#141517] text-neutral-400 hover:text-white hover:bg-[#1a1b1f]'
-          }`}
+        {/* Option 3: Modo Fantasma Telegram (Telethon) */}
+        <div
+          onClick={() => handleOpenOption('telegram_fantasma')}
+          className="p-6 rounded-2xl bg-[#141517] hover:bg-[#18191d] border border-[#22242a] hover:border-[#0088cc]/50 transition-all cursor-pointer shadow-xl group flex flex-col sm:flex-row sm:items-center justify-between gap-4"
         >
-          <Send className="w-4 h-4 text-[#29b6f6]" />
-          <span>Modo Fantasma Telegram (Telethon)</span>
-          <span
-            className={`px-2 py-0.5 rounded-full text-[10px] font-mono border ${
-              telethonStatus?.status === 'connected'
-                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 font-bold'
-                : telethonStatus?.status === 'waiting_code' || telethonStatus?.status === 'waiting_2fa'
-                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse font-bold'
-                : telethonStatus?.isRunning
-                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-                : 'bg-neutral-800 text-neutral-400 border-neutral-700'
-            }`}
-          >
-            {telethonStatus?.status === 'connected'
-              ? 'CONECTADO'
-              : telethonStatus?.status === 'waiting_code'
-              ? 'DIGITAR CÓDIGO'
-              : telethonStatus?.status === 'waiting_2fa'
-              ? 'DIGITAR 2FA'
-              : telethonStatus?.isRunning
-              ? 'INICIANDO'
-              : 'DESLIGADO'}
-          </span>
-        </button>
+          <div className="flex items-start sm:items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-[#0088cc]/15 border border-[#0088cc]/30 flex items-center justify-center text-[#29b6f6] shrink-0 group-hover:scale-105 transition-transform shadow-md">
+              <Send className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-base font-extrabold text-white group-hover:text-[#29b6f6] transition">
+                  Modo Fantasma Telegram (Telethon)
+                </h3>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono border ${
+                    telethonStatus?.status === 'connected'
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 font-bold'
+                      : telethonStatus?.status === 'waiting_code' || telethonStatus?.status === 'waiting_2fa'
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse font-bold'
+                      : telethonStatus?.isRunning
+                      ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                      : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                  }`}
+                >
+                  {telethonStatus?.status === 'connected'
+                    ? 'CONECTADO'
+                    : telethonStatus?.status === 'waiting_code'
+                    ? 'DIGITAR CÓDIGO'
+                    : telethonStatus?.status === 'waiting_2fa'
+                    ? 'DIGITAR 2FA'
+                    : telethonStatus?.isRunning
+                    ? 'INICIANDO'
+                    : 'DESLIGADO'}
+                </span>
+              </div>
+              <p className="text-xs text-neutral-400 max-w-xl leading-relaxed">
+                Motor Python para capturar mensagens de canais e grupos concorrentes do Telegram e replicar automaticamente para o WhatsApp VIP.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#1c1d22] group-hover:bg-[#0088cc] text-xs font-bold text-[#29b6f6] group-hover:text-white transition-colors self-end sm:self-center shrink-0 border border-[#262832] group-hover:border-[#0088cc]">
+            <span>Acessar em Tela Inteira</span>
+            <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+          </div>
+        </div>
 
-        <button
-          onClick={() => {
-            setActiveTab('watermark');
-            fetchWatermarkConfig();
-          }}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
-            activeTab === 'watermark'
-              ? 'bg-[#FF5722] text-white shadow-lg shadow-[#FF5722]/20'
-              : 'bg-[#141517] text-neutral-400 hover:text-white hover:bg-[#1a1b1f]'
-          }`}
+        {/* Option 4: Filtro Anti-Marca d'Água */}
+        <div
+          onClick={() => handleOpenOption('watermark')}
+          className="p-6 rounded-2xl bg-[#141517] hover:bg-[#18191d] border border-[#22242a] hover:border-[#FF5722]/50 transition-all cursor-pointer shadow-xl group flex flex-col sm:flex-row sm:items-center justify-between gap-4"
         >
-          <Eye className="w-4 h-4" />
-          <span>Filtro Anti-Marca d'Água</span>
-          <span
-            className={`px-2 py-0.5 rounded-full text-[10px] font-mono border ${
-              watermarkConfig.enabled
-                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                : 'bg-neutral-800 text-neutral-400 border-neutral-700'
-            }`}
-          >
-            {watermarkConfig.enabled ? 'ATIVO' : 'PAUSADO'}
-          </span>
-        </button>
+          <div className="flex items-start sm:items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0 group-hover:scale-105 transition-transform shadow-md">
+              <Eye className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-base font-extrabold text-white group-hover:text-[#FF5722] transition">
+                  Filtro Anti-Marca d'Água
+                </h3>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono border ${
+                    watermarkConfig.enabled
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                      : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                  }`}
+                >
+                  {watermarkConfig.enabled ? 'ATIVO' : 'PAUSADO'}
+                </span>
+              </div>
+              <p className="text-xs text-neutral-400 max-w-xl leading-relaxed">
+                Exclui ou substitui imagens contendo selos, avatares circulares ou nomes de concorrentes por fotos limpas oficiais HD.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#1c1d22] group-hover:bg-[#FF5722] text-xs font-bold text-[#FF5722] group-hover:text-white transition-colors self-end sm:self-center shrink-0 border border-[#262832] group-hover:border-[#FF5722]">
+            <span>Acessar em Tela Inteira</span>
+            <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+          </div>
+        </div>
 
-        <button
-          onClick={() => {
-            setActiveTab('chat_filter');
-            fetchChatFilterConfig();
-          }}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
-            activeTab === 'chat_filter'
-              ? 'bg-[#FF5722] text-white shadow-lg shadow-[#FF5722]/20'
-              : 'bg-[#141517] text-neutral-400 hover:text-white hover:bg-[#1a1b1f]'
-          }`}
+        {/* Option 5: Filtro de Chat */}
+        <div
+          onClick={() => handleOpenOption('chat_filter')}
+          className="p-6 rounded-2xl bg-[#141517] hover:bg-[#18191d] border border-[#22242a] hover:border-[#FF5722]/50 transition-all cursor-pointer shadow-xl group flex flex-col sm:flex-row sm:items-center justify-between gap-4"
         >
-          <Scissors className="w-4 h-4" />
-          <span>Filtro de Chat</span>
-          <span
-            className={`px-2 py-0.5 rounded-full text-[10px] font-mono border ${
-              chatFilterConfig.enabled
-                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                : 'bg-neutral-800 text-neutral-400 border-neutral-700'
-            }`}
-          >
-            {chatFilterConfig.enabled ? 'ATIVO' : 'PAUSADO'}
-          </span>
-        </button>
+          <div className="flex items-start sm:items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 group-hover:scale-105 transition-transform shadow-md">
+              <Scissors className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h3 className="text-base font-extrabold text-white group-hover:text-emerald-400 transition">
+                  Filtro de Chat
+                </h3>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono border ${
+                    chatFilterConfig.enabled
+                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                      : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                  }`}
+                >
+                  {chatFilterConfig.enabled ? 'ATIVO' : 'PAUSADO'}
+                </span>
+              </div>
+              <p className="text-xs text-neutral-400 max-w-xl leading-relaxed">
+                Remove cabeçalhos em *asteriscos*, chamadas apelativas e frases indesejadas das mensagens replicadas.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#1c1d22] group-hover:bg-emerald-500 text-xs font-bold text-emerald-400 group-hover:text-black transition-colors self-end sm:self-center shrink-0 border border-[#262832] group-hover:border-emerald-500">
+            <span>Acessar em Tela Inteira</span>
+            <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+          </div>
+        </div>
       </div>
 
-      {/* TAB 1: REGRAS & DISPAROS */}
-      {activeTab === 'rules' && (
+      {/* FULL SCREEN MODAL VIEW (Abre a tela inteira quando acessa qualquer opção) */}
+      {fullScreenTab !== null && (
+        <div className="fixed inset-0 z-50 bg-[#0e0f12] text-neutral-200 overflow-y-auto animate-in fade-in zoom-in-95 p-4 sm:p-8 flex flex-col">
+          {/* Top Full Screen Header Bar */}
+          <div className="max-w-7xl w-full mx-auto pb-6 mb-6 border-b border-[#22242a] flex flex-col md:flex-row md:items-center justify-between gap-4 shrink-0">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setFullScreenTab(null)}
+                className="px-4 py-2 rounded-xl bg-[#18191d] hover:bg-[#252730] text-neutral-300 hover:text-white border border-[#272930] transition text-xs font-bold flex items-center gap-2 cursor-pointer shadow-md"
+              >
+                <ArrowLeft className="w-4 h-4 text-[#FF5722]" />
+                <span>Voltar às Opções</span>
+              </button>
+
+              <div className="h-6 w-px bg-[#262832]" />
+
+              <div className="flex items-center gap-2.5">
+                {fullScreenTab === 'rules' && <Sliders className="w-5 h-5 text-[#FF5722]" />}
+                {fullScreenTab === 'connections' && <Radio className="w-5 h-5 text-[#FF5722]" />}
+                {fullScreenTab === 'telegram_fantasma' && <Send className="w-5 h-5 text-[#29b6f6]" />}
+                {fullScreenTab === 'watermark' && <Eye className="w-5 h-5 text-[#FF5722]" />}
+                {fullScreenTab === 'chat_filter' && <Scissors className="w-5 h-5 text-[#FF5722]" />}
+
+                <h2 className="text-lg font-black text-white tracking-tight">
+                  {fullScreenTab === 'rules' && 'Regras & Disparos • Configuração em Tela Inteira'}
+                  {fullScreenTab === 'connections' && 'Marketplaces Connections • Configuração em Tela Inteira'}
+                  {fullScreenTab === 'telegram_fantasma' && 'Modo Fantasma Telegram (Telethon) • Configuração em Tela Inteira'}
+                  {fullScreenTab === 'watermark' && "Filtro Anti-Marca d'Água • Configuração em Tela Inteira"}
+                  {fullScreenTab === 'chat_filter' && 'Filtro de Chat • Configuração em Tela Inteira'}
+                </h2>
+              </div>
+            </div>
+
+            {/* Quick Option Switcher Pills inside Full Screen Header */}
+            <div className="flex items-center gap-1.5 bg-[#141517] p-1.5 rounded-2xl border border-[#22242a] overflow-x-auto">
+              <button
+                onClick={() => handleOpenOption('rules')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                  fullScreenTab === 'rules' ? 'bg-[#FF5722] text-white shadow-md shadow-[#FF5722]/20' : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                Regras
+              </button>
+              <button
+                onClick={() => handleOpenOption('connections')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                  fullScreenTab === 'connections' ? 'bg-[#FF5722] text-white shadow-md shadow-[#FF5722]/20' : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                Marketplaces
+              </button>
+              <button
+                onClick={() => handleOpenOption('telegram_fantasma')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                  fullScreenTab === 'telegram_fantasma' ? 'bg-[#0088cc] text-white shadow-md shadow-[#0088cc]/30' : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                Telegram Fantasma
+              </button>
+              <button
+                onClick={() => handleOpenOption('watermark')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                  fullScreenTab === 'watermark' ? 'bg-[#FF5722] text-white shadow-md shadow-[#FF5722]/20' : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                Anti-Marca d'Água
+              </button>
+              <button
+                onClick={() => handleOpenOption('chat_filter')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                  fullScreenTab === 'chat_filter' ? 'bg-[#FF5722] text-white shadow-md shadow-[#FF5722]/20' : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                Filtro Chat
+              </button>
+
+              <button
+                onClick={() => setFullScreenTab(null)}
+                className="p-1.5 rounded-xl text-neutral-400 hover:text-white hover:bg-[#252730] transition ml-2 cursor-pointer"
+                title="Fechar Tela Inteira"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Full Screen Body Container */}
+          <div className="max-w-7xl w-full mx-auto flex-1">
+            {/* TAB 1: REGRAS & DISPAROS */}
+            {activeTab === 'rules' && (
         <div className="space-y-6">
           {/* Settings Card */}
           <div className="p-6 sm:p-8 rounded-2xl bg-[#141517] border border-[#22242a] shadow-xl space-y-6">
@@ -2748,6 +2909,9 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
           </div>
         </div>
       )}

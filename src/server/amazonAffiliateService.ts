@@ -28,14 +28,16 @@ export function extractAmazonAsin(url: string): string | null {
   // /d/B09B8VGCR8
   // /product-reviews/B09B8VGCR8
   // ?asin=B09B8VGCR8 or &asin=B09B8VGCR8
+  // link.amazon/B0igTSVuM or link.amazon/B0anM1f0P
   const asinMatch =
-    clean.match(/(?:\/dp\/|\/gp\/product\/|\/gp\/aw\/d\/|\/product\/|\/d\/|\/product-reviews\/|[?&]asin=)([A-Z0-9]{10})/i) ||
+    clean.match(/(?:\/dp\/|\/gp\/product\/|\/gp\/aw\/d\/|\/product\/|\/d\/|\/product-reviews\/|[?&]asin=)([A-Z0-9]{9,12})/i) ||
+    clean.match(/\/(B0[A-Z0-9]{7,10})(?:[/?&#]|$)/i) ||
     clean.match(/\/([A-Z0-9]{10})(?:[/?&#]|$)/i);
 
   if (asinMatch && asinMatch[1]) {
     const candidate = asinMatch[1].toUpperCase();
-    // Validate ASIN format (10 alphanumeric characters)
-    if (/^[A-Z0-9]{10}$/.test(candidate)) {
+    // Validate ASIN format (9 to 12 alphanumeric characters, typically B0...)
+    if (/^[A-Z0-9]{9,12}$/.test(candidate)) {
       return candidate;
     }
   }
@@ -44,7 +46,7 @@ export function extractAmazonAsin(url: string): string | null {
 }
 
 /**
- * Converts any Amazon URL (shortlink amzn.to/a.co or direct URL) into the user's
+ * Converts any Amazon URL (shortlink amzn.to/a.co/link.amazon or direct URL) into the user's
  * official Amazon Associates SiteStripe link with the configured Associate Tag.
  */
 export async function converter_link_amazon(
@@ -75,18 +77,24 @@ export async function converter_link_amazon(
     DEFAULT_AMAZON_TAG ||
     'botvip-20';
 
-  // 1. Resolve short-links (e.g., amzn.to/..., a.co/..., amzn.eu/...)
+  // 1. Resolve short-links (e.g., amzn.to/..., a.co/..., amzn.eu/..., link.amazon/...)
   let resolvedUrl = trimmed;
   const isShortLink =
     trimmed.includes('amzn.to') ||
     trimmed.includes('a.co') ||
     trimmed.includes('amzn.eu') ||
-    trimmed.includes('amzn.asia');
+    trimmed.includes('amzn.asia') ||
+    trimmed.includes('link.amazon');
 
   if (isShortLink) {
     try {
       const expanded = await resolveShortLinkToLongUrl(trimmed);
-      if (expanded && expanded !== trimmed) {
+      if (
+        expanded &&
+        expanded !== trimmed &&
+        !expanded.endsWith('amazon.com/') &&
+        !expanded.endsWith('amazon.com.br/')
+      ) {
         resolvedUrl = expanded;
         console.log(`[Amazon Affiliate] 🔄 Link curto "${trimmed}" expandido para: "${resolvedUrl}"`);
       }
