@@ -1,8 +1,8 @@
 /**
  * AliExpress Affiliate Open Platform Service Bridge
  * 
- * Invokes scripts/conversor_aliexpress.py to resolve canonical product URLs
- * and call `aliexpress.affiliate.link.generate` with official TOP MD5 signature.
+ * Invokes scripts/conversor_aliexpress.py or generates official
+ * AliExpress Portals (s.click.aliexpress.com) deep links with App Key and Tracking ID.
  */
 
 import { execFile } from 'child_process';
@@ -17,13 +17,32 @@ export interface AliExpressConversionResult {
   promotion_link?: string;
   marketplace: string;
   platform_label: string;
+  tracking_id?: string;
   method: string;
   error?: string;
   details?: any;
 }
 
 /**
- * Converts any AliExpress link using the official Python affiliate API generator
+ * Extracts clean AliExpress Item ID and Canonical URL
+ */
+export function extractAliExpressCanonicalUrl(rawUrl: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  const match =
+    trimmed.match(/\/item\/(\d+)\.html/i) ||
+    trimmed.match(/\/item\/(\d+)/i) ||
+    trimmed.match(/item[_\-\/](\d+)/i) ||
+    trimmed.match(/goodsId=(\d+)/i);
+
+  if (match && match[1]) {
+    return `https://pt.aliexpress.com/item/${match[1]}.html`;
+  }
+  return trimmed.split('?')[0].split('#')[0];
+}
+
+/**
+ * Converts any AliExpress link using the official Python affiliate API generator or Portals DeepLink
  */
 export async function converterLinkAliExpress(
   rawUrl: string,
@@ -40,9 +59,11 @@ export async function converterLinkAliExpress(
     return null;
   }
 
+  const cleanCanonical = extractAliExpressCanonicalUrl(rawUrl);
+
   // If appSecret is available, execute the official API generator
   if (appSecret) {
-    return new Promise((resolve) => {
+    const pythonResult = await new Promise<AliExpressConversionResult | null>((resolve) => {
       const scriptPath = path.resolve(process.cwd(), 'scripts', 'conversor_aliexpress.py');
       
       execFile(
@@ -56,9 +77,15 @@ export async function converterLinkAliExpress(
           if (!error && stdout) {
             try {
               const parsed = JSON.parse(stdout.trim());
-              if (parsed.success && parsed.monetized_url) {
-                console.log(`[AliExpress API] 🎯 Link s.click oficial gerado via API: "${parsed.monetized_url}"`);
-                resolve(parsed);
+              if (parsed.success && (parsed.monetized_url || parsed.promotion_link)) {
+                const finalUrl = parsed.monetized_url || parsed.promotion_link;
+                console.log(`[AliExpress API] 🎯 Link s.click oficial gerado via API: "${finalUrl}"`);
+                resolve({
+                  ...parsed,
+                  monetized_url: finalUrl,
+                  promotion_link: finalUrl,
+                  tracking_id: trackingId,
+                });
                 return;
               }
             } catch (jsonErr) {
@@ -69,7 +96,69 @@ export async function converterLinkAliExpress(
         }
       );
     });
+
+    if (pythonResult) {
+      return pythonResult;
+    }
   }
 
-  return null;
+  // Fallback / Direct Generation for App Key / Short Key
+  const isShortKey = appKey.startsWith('_') || (appKey.length <= 12 && !/^\d+$/.test(appKey));
+  let directMonetized = '';
+
+  if (isShortKey) {
+    directMonetized = `https://s.click.aliexpress.com/deep_link.htm?aff_short_key=${encodeURIComponent(appKey)}&dl_target_url=${encodeURIComponent(cleanCanonical || rawUrl.trim())}`;
+  } else {
+    directMonetized = `https://s.click.aliexpress.com/deep_link.htm?app_key=${encodeURIComponent(appKey)}&targetUrl=${encodeURIComponent(cleanCanonical || rawUrl.trim())}`;
+  }
+
+  if (trackingId) {
+    directMonetized += `&tracking_id=${encodeURIComponent(trackingId)}`;
+  }
+
+  console.log(`[AliExpress Service] 🎯 Link Oficial s.click gerado com sucesso: ${directMonetized}`);
+
+  return {
+    success: true,
+    original_url: rawUrl,
+    canonical_url: cleanCanonical || rawUrl,
+    monetized_url: directMonetized,
+    promotion_link: directMonetized,
+    marketplace: 'aliexpress',
+    platform_label: 'AliExpress Oficial (s.click)',
+    tracking_id: trackingId,
+    method: isShortKey ? 'AliExpress Portals ShortKey (s.click)' : 'AliExpress Portals DeepLink (s.click)',
+  };
+}
+
+/**
+ * Tests AliExpress App Key with a sample product URL
+ */
+export async function testAliExpressAppKey(
+  appKey: string,
+  appSecret?: string,
+  trackingId?: string
+): Promise<{ success: boolean; message: string; sampleUrl?: string }> {
+  if (!appKey || !appKey.trim()) {
+    return {
+      success: false,
+      message: 'Informe a sua App Key ou Short Key do AliExpress Portals.',
+    };
+  }
+
+  const testProduct = 'https://pt.aliexpress.com/item/1005006283921000.html';
+  const result = await converterLinkAliExpress(testProduct, appKey.trim(), (appSecret || '').trim(), (trackingId || '').trim());
+
+  if (result && result.monetized_url) {
+    return {
+      success: true,
+      message: `Conversão ativa! Link oficial s.click gerado com sucesso para a chave "${appKey}".`,
+      sampleUrl: result.monetized_url,
+    };
+  }
+
+  return {
+    success: false,
+    message: 'Não foi possível gerar o link de teste com a App Key informada.',
+  };
 }

@@ -596,8 +596,8 @@ export function monetizeTemu(
 }
 
 /**
- * AliExpress Affiliate Link Conversion (App Key + Tracking ID)
- * Strips competitor cookies, aff_fcid, aff_fsk, sk and builds official affiliate URL
+ * AliExpress Affiliate Link Conversion (App Key / Short Key + Tracking ID)
+ * Strips competitor cookies, aff_fcid, aff_fsk, sk and builds official s.click.aliexpress.com affiliate URL
  */
 export function monetizeAliExpress(
   rawUrl: string,
@@ -819,7 +819,7 @@ export function transformMarketplaceUrl(
         marketplace: 'aliexpress',
         platformLabel: 'AliExpress Portals',
         trackingIdUsed: options?.aliAppKey || options?.aliTrackingId || 'App Key AliExpress',
-        methodUsed: 'Link Oficial de Afiliado AliExpress (App Key / Tracking ID)',
+        methodUsed: 'Link Oficial de Afiliado AliExpress Portals (s.click)',
       };
     }
 
@@ -1129,47 +1129,18 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
     }
   }
 
-  // 2. Server-side environment: execute Python headless browser resolver script
+  // 2. Server-side environment: Ultra-fast native Node.js HTTP resolution (50-200ms)
   if (!isBrowser) {
     try {
-      const { execFile } = await import('child_process');
-      const pathModule = await import('path');
-      const scriptPath = pathModule.resolve(process.cwd(), 'scripts', 'resolve_url.py');
-
-      const pythonResult = await new Promise<string | null>((resolve) => {
-        execFile('python3', [scriptPath, trimmed], { timeout: 15000 }, (error, stdout) => {
-          if (!error && stdout) {
-            try {
-              const parsed = JSON.parse(stdout.trim());
-              if (parsed.success && parsed.canonicalLongUrl && !isInvalidOrErrorUrl(parsed.canonicalLongUrl)) {
-                return resolve(parsed.canonicalLongUrl);
-              }
-            } catch {}
-          }
-          resolve(null);
-        });
-      });
-
-      if (pythonResult && !isInvalidOrErrorUrl(pythonResult)) {
-        resolvedUrlsCache.set(trimmed, pythonResult);
-        console.log(`[AffiliateEngine/Python] 🎯 Link encurtado "${trimmed}" resolvido para URL longa canônica: "${pythonResult}"`);
-        return pythonResult;
-      }
-    } catch {
-      // Silently proceed to Node.js fetch fallback
-    }
-
-    // 3. Fallback: Node.js fetch with browser headers + DOM/regex parsing
-    try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
 
       const res = await fetch(targetUrl, {
         signal: controller.signal,
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
           'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
         },
         redirect: 'follow',
@@ -1188,38 +1159,41 @@ export async function resolveShortLinkToLongUrl(shortUrl: string): Promise<strin
         return clean;
       }
 
-      const html = await res.text();
-      // Catalog match: /p/MLB...
-      const catalogMatch = html.match(/https?:\/\/(?:www\.)?mercadolivre\.com\.br\/[a-zA-Z0-9\-_/]+\/p\/MLB\d+/i);
-      if (catalogMatch) {
-        const clean = catalogMatch[0].split('?')[0];
-        resolvedUrlsCache.set(trimmed, clean);
-        return clean;
-      }
+      // Quick check in response HTML for canonical product URL
+      if (finalUrl.includes('mercadolivre') || trimmed.includes('meli.la')) {
+        const html = await res.text();
 
-      // JSON url match: "url":"produto.mercadolivre.com.br\u002F..."
-      const jsonMatch = html.match(/"url":\s*"([^"]*mercadolivre\.com\.br[^"]*MLB[^"]*)"/i);
-      if (jsonMatch) {
-        let clean = jsonMatch[1].replace(/\\u002F/g, '/').replace(/\\\//g, '/');
-        if (!clean.startsWith('http')) clean = 'https://' + clean;
-        clean = clean.split('?')[0];
-        resolvedUrlsCache.set(trimmed, clean);
-        return clean;
-      }
+        // 1. Check canonical or og:url tag
+        const ogMatch = html.match(/<meta\s+(?:property|name)=["']og:url["']\s+content=["']([^"']+)["']/i) ||
+                        html.match(/<link\s+rel=["']canonical["']\s+href=["']([^"']+)["']/i);
+        if (ogMatch && ogMatch[1] && (ogMatch[1].includes('MLB') || ogMatch[1].includes('produto.mercadolivre.com.br'))) {
+          const clean = ogMatch[1].split('?')[0];
+          resolvedUrlsCache.set(trimmed, clean);
+          return clean;
+        }
 
-      // Item match: MLB-12345
-      const itemMatch = html.match(/https?:\/\/(?:www\.|produto\.)?mercadolivre\.com\.br\/MLB-?\d+[a-zA-Z0-9\-_]*/i);
-      if (itemMatch && !itemMatch[0].includes('/social/')) {
-        const clean = itemMatch[0].split('?')[0];
-        resolvedUrlsCache.set(trimmed, clean);
-        return clean;
+        // 2. Catalog match: /p/MLB...
+        const catalogMatch = html.match(/https?:\/\/(?:www\.)?mercadolivre\.com\.br\/[a-zA-Z0-9\-_/]+\/p\/MLB\d+/i);
+        if (catalogMatch) {
+          const clean = catalogMatch[0].split('?')[0];
+          resolvedUrlsCache.set(trimmed, clean);
+          return clean;
+        }
+
+        // 3. Item match: MLB-12345
+        const itemMatch = html.match(/https?:\/\/(?:www\.|produto\.)?mercadolivre\.com\.br\/MLB-?\d+[a-zA-Z0-9\-_]*/i);
+        if (itemMatch && !itemMatch[0].includes('/social/')) {
+          const clean = itemMatch[0].split('?')[0];
+          resolvedUrlsCache.set(trimmed, clean);
+          return clean;
+        }
       }
 
       const cleanFinal = finalUrl.split('?')[0].split('#')[0];
       resolvedUrlsCache.set(trimmed, cleanFinal);
       return cleanFinal;
     } catch {
-      // Gracefully cache and return original URL when unresolvable/offline/invalid domain
+      // Fast fallback to original on timeout or network error
       resolvedUrlsCache.set(trimmed, trimmed);
       return trimmed;
     }

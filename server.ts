@@ -77,6 +77,10 @@ import {
   testAmazonAssociateTag,
 } from './src/server/amazonAffiliateService.ts';
 import {
+  converterLinkAliExpress,
+  testAliExpressAppKey,
+} from './src/server/aliExpressApiService.ts';
+import {
   getTelegramConfig,
   saveTelegramConfig,
   connectTelegramBot,
@@ -1137,6 +1141,39 @@ app.post('/api/marketplaces/test-amazon', async (req, res) => {
   try {
     const tag = req.body?.tag || req.body?.associateTag || '';
     const result = await testAmazonAssociateTag(tag);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message });
+  }
+});
+
+// Endpoint para conversão oficial AliExpress (TOP API ou Portals DeepLink)
+app.post('/api/marketplaces/aliexpress/convert', async (req, res) => {
+  try {
+    const url = req.body?.url || req.body?.url_produto || '';
+    const appKey = req.body?.appKey || req.body?.key || '';
+    const appSecret = req.body?.appSecret || req.body?.secret || '';
+    const trackingId = req.body?.trackingId || req.body?.tracking_id || '';
+    if (!url) {
+      return res.status(400).json({ error: 'URL do produto é obrigatória' });
+    }
+    const result = await converterLinkAliExpress(url, appKey, appSecret, trackingId);
+    if (result && result.monetized_url) {
+      return res.json(result);
+    }
+    return res.status(400).json({ success: false, error: 'Falha na conversão oficial do AliExpress' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message });
+  }
+});
+
+// Endpoint para testar credenciais do AliExpress Portals
+app.post('/api/marketplaces/test-aliexpress', async (req, res) => {
+  try {
+    const appKey = req.body?.appKey || req.body?.key || '';
+    const appSecret = req.body?.appSecret || req.body?.secret || '';
+    const trackingId = req.body?.trackingId || req.body?.tracking_id || '';
+    const result = await testAliExpressAppKey(appKey, appSecret, trackingId);
     return res.json(result);
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err?.message });

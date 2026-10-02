@@ -72,22 +72,20 @@ export default function App() {
     },
   ]);
 
-  // Helper to ensure groups have 100% unique IDs and names
+  // Helper to ensure groups have 100% unique IDs (without dropping groups that share the same display name)
   const deduplicateGroups = (list: GroupChannel[]): GroupChannel[] => {
-    const seenIds = new Set<string>();
-    const seenNames = new Set<string>();
-    const result: GroupChannel[] = [];
+    const map = new Map<string, GroupChannel>();
     for (const g of list) {
       if (!g || !g.name) continue;
-      const cleanId = String(g.id || '').trim();
-      const cleanName = String(g.name || '').trim().toLowerCase();
-      if (cleanId && seenIds.has(cleanId)) continue;
-      if (cleanName && seenNames.has(cleanName)) continue;
-      if (cleanId) seenIds.add(cleanId);
-      if (cleanName) seenNames.add(cleanName);
-      result.push(g);
+      const key = `${g.platform || 'WhatsApp'}_${String(g.id || g.chatId || g.name).trim()}`;
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, g);
+      } else {
+        map.set(key, { ...existing, ...g });
+      }
     }
-    return result;
+    return Array.from(map.values());
   };
 
   // Groups list (persisted in localStorage)
@@ -95,20 +93,7 @@ export default function App() {
     try {
       const saved = localStorage.getItem('bot_vip_groups');
       const parsed = saved ? JSON.parse(saved) : [];
-      const seenIds = new Set<string>();
-      const seenNames = new Set<string>();
-      const result: GroupChannel[] = [];
-      for (const g of parsed) {
-        if (!g || !g.name) continue;
-        const cleanId = String(g.id || '').trim();
-        const cleanName = String(g.name || '').trim().toLowerCase();
-        if (cleanId && seenIds.has(cleanId)) continue;
-        if (cleanName && seenNames.has(cleanName)) continue;
-        if (cleanId) seenIds.add(cleanId);
-        if (cleanName) seenNames.add(cleanName);
-        result.push(g);
-      }
-      return result;
+      return deduplicateGroups(parsed);
     } catch {
       return [];
     }
@@ -291,7 +276,7 @@ export default function App() {
       const targetInstId = instances.find((i) => i.status === 'conectada')?.id || 'inst-1';
 
       // 1. Sync WhatsApp Groups
-      const res = await fetch('/api/whatsapp/groups');
+      const res = await fetch('/api/whatsapp/groups?force=true');
       if (res.ok) {
         const data = await res.json();
         if (data.groups && Array.isArray(data.groups) && data.groups.length > 0) {
@@ -317,7 +302,7 @@ export default function App() {
       }
 
       // 2. Sync WhatsApp Channels (@newsletter)
-      const resChannels = await fetch('/api/whatsapp/canais');
+      const resChannels = await fetch('/api/whatsapp/canais?force=true');
       if (resChannels.ok) {
         const dataC = await resChannels.json();
         if (dataC.channels && Array.isArray(dataC.channels) && dataC.channels.length > 0) {

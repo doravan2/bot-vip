@@ -50,28 +50,14 @@ export async function expandir_link(url_curta: string): Promise<string> {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 2000);
 
-    // Tenta HEAD primeiro
-    let resposta = await fetch(cleanUrl, {
-      method: 'HEAD',
+    const resposta = await fetch(cleanUrl, {
+      method: 'GET',
       redirect: 'follow',
       headers,
       signal: controller.signal,
     }).catch(() => null);
-
-    // Se o site barrar o HEAD ou retornar 428/403, tenta com GET
-    if (!resposta || resposta.status >= 400 || resposta.status === 428) {
-      const getController = new AbortController();
-      const getTimeout = setTimeout(() => getController.abort(), 5000);
-      resposta = await fetch(cleanUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        headers,
-        signal: getController.signal,
-      }).catch(() => null);
-      clearTimeout(getTimeout);
-    }
     clearTimeout(timeout);
 
     let finalUrl = resposta?.url || cleanUrl;

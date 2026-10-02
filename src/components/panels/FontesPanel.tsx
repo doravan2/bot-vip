@@ -130,9 +130,7 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
     ...telegramSyncedGroups.filter(
       (tg) =>
         !groups.some(
-          (g) =>
-            g.platform === 'Telegram' &&
-            (g.id === tg.id || g.name.toLowerCase() === tg.name.toLowerCase())
+          (g) => g.platform === 'Telegram' && (g.id === tg.id || (g.chatId && g.chatId === tg.chatId))
         )
     ),
   ];

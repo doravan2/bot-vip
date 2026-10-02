@@ -78,9 +78,10 @@ let badMacErrorCount = 0;
 
 const authFolder = path.resolve(process.cwd(), '.whatsapp_auth');
 const cachedParticipatingGroups = new Map<string, string>();
+const cachedGroupDetails = new Map<string, RealGroupInfo>();
 let lastGroupFetchTime = 0;
 let inFlightGroupFetchPromise: Promise<Map<string, string>> | null = null;
-const GROUP_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache to prevent rate-overlimit
+const GROUP_CACHE_TTL_MS = 30 * 1000; // 30 seconds cache for background calls, instant on force
 const botSentMessageIds = new Set<string>();
 
 // Cache to handle message retries for WhatsApp cryptographic self-healing (Resolves "Bad MAC" & "Failed to decrypt")
@@ -115,11 +116,26 @@ export async function refreshGroupCache(sock: any, force = false): Promise<Map<s
 
   inFlightGroupFetchPromise = (async () => {
     try {
+      console.log('[Baileys] 🔄 Sincronizando lista 100% atualizada de grupos do WhatsApp...');
       const groupsMap = await sock.groupFetchAllParticipating();
       lastGroupFetchTime = Date.now();
+      
       for (const [id, grp] of Object.entries(groupsMap)) {
-        cachedParticipatingGroups.set(id, (grp as any).subject || '');
+        const groupObj = grp as any;
+        const subject = groupObj.subject || 'Grupo do WhatsApp';
+        const participantsCount = Array.isArray(groupObj.participants) ? groupObj.participants.length : 1;
+        
+        cachedParticipatingGroups.set(id, subject);
+        cachedGroupDetails.set(id, {
+          id,
+          name: subject,
+          membersCount: participantsCount,
+          maxCapacity: 1024,
+          inviteLink: `https://chat.whatsapp.com/`,
+        });
       }
+
+      console.log(`[Baileys] ✅ ${cachedGroupDetails.size} grupos do WhatsApp sincronizados com sucesso!`);
 
       // Auto-resolve any active rules that don't have sourceJid or targetJid yet!
       const rules = getActiveSourceRules();
@@ -206,7 +222,6 @@ export async function refreshGroupCache(sock: any, force = false): Promise<Map<s
     } catch (err: any) {
       const errMsg = String(err?.message || err);
       if (errMsg.includes('rate-overlimit') || err?.data === 429) {
-        // Temporarily back off for 3 minutes to respect WhatsApp limits
         lastGroupFetchTime = Date.now();
         console.warn(`[Baileys] ⏳ WhatsApp rate-limit (rate-overlimit) detectado. Mantendo ${cachedParticipatingGroups.size} grupos em cache.`);
       } else {
@@ -225,21 +240,21 @@ export function getWhatsAppState(): WhatsAppSessionState {
   return state;
 }
 
-export async function getRealWhatsAppGroups(): Promise<RealGroupInfo[]> {
+export async function getRealWhatsAppGroups(force = true): Promise<RealGroupInfo[]> {
   if (!currentSocket || !state.isConnected) {
     return [];
   }
   try {
-    const groupsMap = await refreshGroupCache(currentSocket);
+    await refreshGroupCache(currentSocket, force);
     const result: RealGroupInfo[] = [];
-    for (const [id, name] of groupsMap.entries()) {
+    for (const [id, info] of cachedGroupDetails.entries()) {
       if (!id.endsWith('@newsletter')) {
         result.push({
-          id,
-          name,
-          membersCount: 1,
-          maxCapacity: 1024,
-          inviteLink: `https://chat.whatsapp.com/`,
+          id: info.id,
+          name: info.name,
+          membersCount: info.membersCount || 1,
+          maxCapacity: info.maxCapacity || 1024,
+          inviteLink: info.inviteLink || `https://chat.whatsapp.com/`,
         });
       }
     }
@@ -518,6 +533,59 @@ export async function initBaileysSocket(): Promise<void> {
     });
 
     currentSocket = sock;
+
+    // Real-time group updates & synchronization
+    sock.ev.on('groups.upsert', (newGroups: any[]) => {
+      try {
+        if (!Array.isArray(newGroups)) return;
+        for (const grp of newGroups) {
+          if (grp?.id) {
+            const subject = grp.subject || 'Grupo do WhatsApp';
+            const participantsCount = Array.isArray(grp.participants) ? grp.participants.length : 1;
+            cachedParticipatingGroups.set(grp.id, subject);
+            cachedGroupDetails.set(grp.id, {
+              id: grp.id,
+              name: subject,
+              membersCount: participantsCount,
+              maxCapacity: 1024,
+              inviteLink: `https://chat.whatsapp.com/`,
+            });
+            console.log(`[Baileys] 👥 Novo grupo detectado em tempo real: "${subject}" (${grp.id})`);
+          }
+        }
+      } catch {}
+    });
+
+    sock.ev.on('groups.update', (updates: any[]) => {
+      try {
+        if (!Array.isArray(updates)) return;
+        for (const u of updates) {
+          if (u?.id && u?.subject) {
+            cachedParticipatingGroups.set(u.id, u.subject);
+            const prev = cachedGroupDetails.get(u.id);
+            if (prev) {
+              prev.name = u.subject;
+            }
+            console.log(`[Baileys] ✏️ Nome do grupo atualizado em tempo real: "${u.subject}" (${u.id})`);
+          }
+        }
+      } catch {}
+    });
+
+    sock.ev.on('group-participants.update', ({ id, participants, action }: any) => {
+      try {
+        if (id && cachedGroupDetails.has(id)) {
+          const grp = cachedGroupDetails.get(id);
+          if (grp) {
+            if (action === 'add') {
+              grp.membersCount = (grp.membersCount || 1) + (Array.isArray(participants) ? participants.length : 1);
+            } else if (action === 'remove') {
+              grp.membersCount = Math.max(1, (grp.membersCount || 1) - (Array.isArray(participants) ? participants.length : 1));
+            }
+          }
+        }
+      } catch {}
+    });
 
     // Listen for incoming messages for automatic Replica Zap forwarding
     sock.ev.on('messages.upsert', async ({ messages }: any) => {
@@ -1277,24 +1345,6 @@ export async function executeReplicaPipeline(params: {
         }
       }
 
-      // Fallback: atualizar cache de grupos
-      if (!thisTargetJid || (!thisTargetJid.endsWith('@g.us') && !thisTargetJid.endsWith('@newsletter'))) {
-        try {
-          const freshMap = await refreshGroupCache(sendSock, true);
-          for (const [jid, subj] of freshMap.entries()) {
-            const cleanSubj = subj.replace(/[^\p{L}\p{N}]/gu, '').trim().toLowerCase();
-            if (cleanSubj && (cleanSubj === cleanTgt || cleanSubj.includes(cleanTgt) || cleanTgt.includes(cleanSubj))) {
-              thisTargetJid = jid;
-              if (!matchedRule.targetJids) matchedRule.targetJids = [];
-              matchedRule.targetJids[i] = jid;
-              matchedRule.targetJid = jid;
-              setActiveSourceRules(getActiveSourceRules());
-              break;
-            }
-          }
-        } catch {}
-      }
-
       // Se ainda não encontrou, usa qualquer grupo conectado diferente da origem
       if (!thisTargetJid && cachedParticipatingGroups.size > 0) {
         for (const [jid] of cachedParticipatingGroups.entries()) {
@@ -1303,6 +1353,13 @@ export async function executeReplicaPipeline(params: {
             break;
           }
         }
+      }
+
+      // Fallback em segundo plano (não bloqueante) se o cache estiver completamente vazio
+      if (!thisTargetJid && cachedParticipatingGroups.size === 0) {
+        try {
+          refreshGroupCache(sendSock, false).catch(() => {});
+        } catch {}
       }
 
       if (thisTargetJid) {

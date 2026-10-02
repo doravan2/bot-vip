@@ -543,7 +543,6 @@ export async function cleanAndMonetizeCompetitorMessage(
             temuCode: (mpConfig.temu as any)?.referralCode,
             temuLink: (mpConfig.temu as any)?.universalLink,
             aliAppKey: (mpConfig.aliexpress as any)?.appKey,
-            aliTrackingId: (mpConfig.aliexpress as any)?.trackingId,
             customMeliLinks: settings.mercadoLivre.customMeliLinks,
             enabledMarketplaces,
           });

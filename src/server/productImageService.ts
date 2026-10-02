@@ -142,7 +142,7 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const timeout = setTimeout(() => controller.abort(), 2500);
 
     const res = await fetch(cleanUrl, {
       headers: {
@@ -280,7 +280,7 @@ export async function fetchProductImageBuffer(
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 2500);
 
     const res = await fetch(imageUrl, {
       headers: {

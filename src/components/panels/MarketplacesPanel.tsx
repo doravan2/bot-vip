@@ -138,6 +138,7 @@ export const MarketplacesPanel: React.FC = () => {
   const [aliTrackingId, setAliTrackingId] = useState('');
   const [showAliSecret, setShowAliSecret] = useState(false);
   const [showAliHelp, setShowAliHelp] = useState(false);
+  const [aliTestResult, setAliTestResult] = useState<{ success: boolean; message: string; sampleUrl?: string } | null>(null);
 
   // SHEIN forms
   const [sheinId, setSheinId] = useState('');
@@ -284,6 +285,32 @@ export const MarketplacesPanel: React.FC = () => {
       setAmazonTestResult(data);
     } catch (err: any) {
       setAmazonTestResult({ success: false, message: 'Erro ao testar conversão Amazon: ' + err.message });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleTestAliExpress = async () => {
+    if (!aliAppKey.trim()) {
+      setAliTestResult({ success: false, message: 'Informe a sua App Key ou Short Key do AliExpress.' });
+      return;
+    }
+    setIsLoading(true);
+    setAliTestResult(null);
+    try {
+      const res = await fetch('/api/marketplaces/test-aliexpress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          appKey: aliAppKey.trim(),
+          appSecret: aliAppSecret.trim(),
+          trackingId: aliTrackingId.trim(),
+        }),
+      });
+      const data = await res.json();
+      setAliTestResult(data);
+    } catch (err: any) {
+      setAliTestResult({ success: false, message: 'Erro ao testar conversão AliExpress: ' + err.message });
     } finally {
       setIsLoading(false);
     }
@@ -1177,6 +1204,22 @@ export const MarketplacesPanel: React.FC = () => {
             {/* AliExpress Modal Content */}
             {activeModal === 'aliexpress' && (
               <div className="space-y-4">
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#18191d] border border-[#242630] text-[11px]">
+                  <span className="flex items-center gap-1.5 text-neutral-400 font-medium">
+                    <ShieldCheck className="w-3.5 h-3.5 text-red-500" />
+                    Portal Oficial de Afiliados AliExpress Portals
+                  </span>
+                  <a
+                    href="https://portals.aliexpress.com/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#20222a] hover:bg-[#2a2d38] text-neutral-200 hover:text-white font-bold border border-[#2e313c] transition"
+                  >
+                    <span>Abrir Portals</span>
+                    <ExternalLink className="w-3 h-3 text-neutral-400" />
+                  </a>
+                </div>
+
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-neutral-300">APP KEY DO ALIEXPRESS (PORTALS)</label>
                   <input
@@ -1186,7 +1229,25 @@ export const MarketplacesPanel: React.FC = () => {
                     placeholder="ex: 33182940 ou _oBXYZ"
                     className="w-full px-4 py-3 bg-[#18191d] border border-[#272930] rounded-xl text-xs font-mono text-white placeholder-neutral-600 focus:outline-none focus:border-[#FF5722]"
                   />
+                  <p className="text-[11px] text-neutral-400">
+                    Insira a sua <strong className="text-white">App Key</strong> numérica (ex: <code className="text-red-400 font-mono">33182940</code>) ou <strong className="text-white">Short Key</strong> (ex: <code className="text-red-400 font-mono">_oBXYZ</code>) obtida no AliExpress Portals.
+                  </p>
                 </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-neutral-300">TRACKING ID (PORTALS / SUB-ID)</label>
+                  <input
+                    type="text"
+                    value={aliTrackingId}
+                    onChange={(e) => setAliTrackingId(e.target.value)}
+                    placeholder="ex: default ou seutrackingid"
+                    className="w-full px-4 py-3 bg-[#18191d] border border-[#272930] rounded-xl text-xs font-mono text-white placeholder-neutral-600 focus:outline-none focus:border-[#FF5722]"
+                  />
+                  <p className="text-[11px] text-neutral-400">
+                    Seu Tracking ID cadastrado no painel do AliExpress Portals (ex: <code className="text-red-400 font-mono">default</code>).
+                  </p>
+                </div>
+
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-neutral-300">APP SECRET DA API (OPCIONAL)</label>
@@ -1202,33 +1263,66 @@ export const MarketplacesPanel: React.FC = () => {
                     type={showAliSecret ? 'text' : 'password'}
                     value={aliAppSecret}
                     onChange={(e) => setAliAppSecret(e.target.value)}
-                    placeholder="ex: 8f49a781b29a..."
+                    placeholder="ex: 8f49a781b29a... (deixe em branco se usar apenas App Key/Short Key)"
                     className="w-full px-4 py-3 bg-[#18191d] border border-[#272930] rounded-xl text-xs font-mono text-white placeholder-neutral-600 focus:outline-none focus:border-[#FF5722]"
                   />
+                  <p className="text-[11px] text-neutral-500">
+                    Necessário apenas para assinatura via TOP Open Platform. Se você não tem secret, a monetização funciona normalmente via Deep Link oficial.
+                  </p>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-neutral-300">TRACKING ID (OPCIONAL)</label>
-                  <input
-                    type="text"
-                    value={aliTrackingId}
-                    onChange={(e) => setAliTrackingId(e.target.value)}
-                    placeholder="ex: default"
-                    className="w-full px-4 py-3 bg-[#18191d] border border-[#272930] rounded-xl text-xs font-mono text-white placeholder-neutral-600 focus:outline-none focus:border-[#FF5722]"
-                  />
+
+                {aliTestResult && (
+                  <div
+                    className={`p-3.5 rounded-xl text-xs font-medium space-y-1.5 ${
+                      aliTestResult.success
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                        : 'bg-red-500/10 text-red-400 border border-red-500/30'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 font-bold">
+                      {aliTestResult.success ? (
+                        <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                      )}
+                      <span>{aliTestResult.message}</span>
+                    </div>
+                    {aliTestResult.sampleUrl && (
+                      <div className="text-[10px] font-mono break-all text-neutral-300 bg-black/40 p-2 rounded-lg">
+                        {aliTestResult.sampleUrl}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleTestAliExpress}
+                    disabled={isLoading || !aliAppKey.trim()}
+                    className="flex-1 py-3 px-4 rounded-xl bg-[#1e2028] hover:bg-[#282a36] text-neutral-200 hover:text-white text-xs font-bold border border-[#2e303e] transition flex items-center justify-center gap-2 cursor-pointer shadow-xs disabled:opacity-50"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-red-400" />
+                    <span>Testar Conversão</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleSaveGeneric('aliexpress', {
+                        appKey: aliAppKey.trim(),
+                        appSecret: aliAppSecret.trim(),
+                        trackingId: aliTrackingId.trim(),
+                        status: 'active',
+                        enabled: true,
+                      })
+                    }
+                    disabled={isLoading || !aliAppKey.trim()}
+                    className="flex-1 py-3 px-4 rounded-xl bg-white hover:bg-neutral-200 text-black font-extrabold text-xs transition cursor-pointer shadow-md disabled:opacity-50"
+                  >
+                    {isLoading ? 'Salvando...' : 'Salvar AliExpress'}
+                  </button>
                 </div>
-                <button
-                  onClick={() =>
-                    handleSaveGeneric('aliexpress', {
-                      appKey: aliAppKey.trim(),
-                      appSecret: aliAppSecret.trim(),
-                      trackingId: aliTrackingId.trim(),
-                    })
-                  }
-                  disabled={isLoading || !aliAppKey.trim()}
-                  className="w-full py-3.5 rounded-xl bg-white hover:bg-neutral-200 text-black font-extrabold text-sm transition cursor-pointer"
-                >
-                  Salvar AliExpress
-                </button>
               </div>
             )}
 
