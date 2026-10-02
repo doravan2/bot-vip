@@ -342,48 +342,160 @@ def iniciar_servidor_webhook_whatsapp(port: int = DEFAULT_PORT):
 
 
 # =============================================================================
-# 2.B MOTOR DE ESCUTA TELEGRAM (TELETHON COM RECONEXÃO AUTOMÁTICA)
+# 2.B MOTOR DE ESCUTA TELEGRAM (TELETHON COM LEITURA DE CODIGO.TXT & NUVEM)
 # =============================================================================
+def ler_codigo_da_nuvem():
+    """Fica à espera que o utilizador crie o ficheiro codigo.txt na raiz do projeto ou envie via API/Painel."""
+    import requests
+
+    logger.info("=" * 60)
+    logger.info("⚠️ O TELEGRAM ENVIOU UM CÓDIGO (SMS/APP) PARA O TEU TELEMÓVEL!")
+    logger.info("👉 Cria um ficheiro chamado 'codigo.txt' aqui no teu editor.")
+    logger.info("👉 Escreve lá os 5 números, guarda o ficheiro, e eu faço o resto!")
+    logger.info("👉 (Ou digite no Painel React na caixa 'Autenticação Fantasma')")
+    logger.info("=" * 60)
+
+    candidatos_arquivo = [
+        "codigo.txt",
+        "codigo_telegram.txt",
+        os.path.join(os.getcwd(), "codigo.txt"),
+        os.path.join(os.getcwd(), "codigo_telegram.txt"),
+        os.path.join(BASE_DIR, "..", "codigo.txt"),
+        os.path.join(BASE_DIR, "codigo.txt"),
+    ]
+
+    while True:
+        # 1. Verifica se o ficheiro codigo.txt foi criado
+        for caminho in candidatos_arquivo:
+            if os.path.exists(caminho):
+                try:
+                    with open(caminho, "r", encoding="utf-8") as f:
+                        codigo = f.read().strip()
+                    try:
+                        os.remove(caminho)  # Limpa o ficheiro logo a seguir
+                    except Exception:
+                        pass
+                    if codigo:
+                        logger.info(f"✅ Código lido do ficheiro: {codigo}")
+                        return codigo
+                except Exception as e:
+                    logger.warning(f"Aviso ao ler ficheiro {caminho}: {e}")
+
+        # 2. Verifica se o usuário enviou pelo Painel React / API Bridge
+        try:
+            resposta = requests.get("http://127.0.0.1:3000/api/telegram/ler-codigo", timeout=2)
+            if resposta.status_code == 200:
+                dados = resposta.json()
+                if dados.get("codigo"):
+                    codigo_api = str(dados["codigo"]).strip()
+                    logger.info(f"✅ Código lido via Painel/API: {codigo_api}")
+                    return codigo_api
+        except Exception:
+            pass
+
+        time.sleep(2)
+
+
 async def iniciar_escuta_telethon_telegram():
-    """
-    Escuta assíncrona de grupos e canais do Telegram utilizando Telethon.
-    Reconecta sozinho caso haja interrupção de rede.
-    """
+    """Conecta o Telethon via arquivo de texto / nuvem e lista todos os grupos e canais."""
     try:
         from telethon import TelegramClient, events
     except ImportError:
         logger.warning("Telethon não instalado. Execute: pip install telethon")
         return
 
-    # Credenciais obtidas em https://my.telegram.org
-    api_id = os.getenv("TELEGRAM_API_ID", "1234567")
-    api_hash = os.getenv("TELEGRAM_API_HASH", "sua_api_hash_aqui")
-    session_name = os.path.join(FILA_DIR, "bot_vip_telegram.session")
+    import requests
 
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+    telefone = os.getenv("TELEGRAM_PHONE")
+
+    if not api_id or not api_hash or not telefone:
+        logger.error("❌ TELEGRAM_API_ID, TELEGRAM_API_HASH ou TELEGRAM_PHONE ausentes no .env!")
+        return
+
+    session_name = "bot_vip_telegram.session"
     client = TelegramClient(session_name, int(api_id), api_hash)
 
-    @client.on(events.NewMessage(chats=GRUPOS_FONTE_TELEGRAM))
-    async def handler_mensagem_telegram(event):
-        try:
-            chat = await event.get_chat()
-            chat_title = getattr(chat, "title", str(event.chat_id))
-            texto = event.message.message or ""
-            tem_midia = bool(event.message.media)
+    logger.info("🔄 A ligar o Fantasma à Nuvem...")
 
-            processar_e_validar_mensagem(
-                origem_plataforma="Telegram (Telethon)",
-                id_grupo=str(event.chat_id),
-                nome_grupo=chat_title,
-                texto_bruto=texto,
-                tem_midia=tem_midia,
-                autor=str(event.sender_id)
-            )
-        except Exception as msg_err:
-            logger.error(f"Erro no processamento de mensagem Telegram: {msg_err}")
+    # Conecta usando a função inteligente que lê o ficheiro de texto ou o painel
+    await client.start(
+        phone=lambda: telefone,
+        code_callback=ler_codigo_da_nuvem,
+        password=ler_codigo_da_nuvem
+    )
 
-    logger.info("Iniciando cliente Telethon...")
-    await client.start()
-    logger.info("✅ Conectado com sucesso ao Telegram! Monitorando grupos fonte...")
+    logger.info("✅ FANTASMA CONECTADO COM SUCESSO!")
+
+    # --- A MÁGICA PARA DESCOBRIR O ID DO GRUPO "TESTE" E DEMAIS CANAIS ---
+    logger.info("🔍 A procurar os teus grupos e canais...")
+    try:
+        async for dialog in client.iter_dialogs():
+            logger.info(f"👉 NOME: '{dialog.name}' | ID NUMÉRICO: {dialog.id}")
+    except Exception as diag_err:
+        logger.warning(f"Aviso ao listar diálogos: {diag_err}")
+
+    # Lista de canais configurados (por ID numérico ou @username)
+    chats_para_escutar = GRUPOS_FONTE_TELEGRAM if GRUPOS_FONTE_TELEGRAM else []
+
+    if chats_para_escutar:
+        logger.info(f"📡 Ativando escuta para {len(chats_para_escutar)} chats configurados...")
+
+        @client.on(events.NewMessage(chats=chats_para_escutar))
+        async def handler_mensagem_telegram(event):
+            try:
+                chat = await event.get_chat()
+                chat_title = getattr(chat, "title", str(event.chat_id))
+                texto = event.message.message or ""
+                tem_midia = bool(event.message.media)
+
+                logger.info(f"📡 [Fantasma] Nova mensagem intercetada em: '{chat_title}' (ID: {event.chat_id})")
+
+                image_path = ""
+                if tem_midia:
+                    os.makedirs(FILA_DIR, exist_ok=True)
+                    caminho_local = os.path.join(FILA_DIR, f'telegram_img_{event.id}.jpg')
+                    image_path = await event.download_media(file=caminho_local)
+
+                payload = {
+                    "sourceName": chat_title,
+                    "rawText": texto,
+                    "imagePath": os.path.abspath(image_path) if image_path else "",
+                }
+
+                node_url = "http://127.0.0.1:3000/api/internal/telegram-hook"
+                try:
+                    resposta = requests.post(node_url, json=payload, timeout=30)
+                    if resposta.status_code == 200:
+                        logger.info("🚀 Sucesso: O Node.js enviou para o WhatsApp!")
+                    else:
+                        logger.error(f"❌ Erro do Node.js: {resposta.status_code}")
+                except Exception as hook_err:
+                    logger.warning(f"⚠️ Aviso ao contactar webhook interno Node.js ({hook_err}). Enviando para fila local...")
+                    processar_e_validar_mensagem(
+                        origem_plataforma="Telegram (Telethon)",
+                        id_grupo=str(event.chat_id),
+                        nome_grupo=chat_title,
+                        texto_bruto=texto,
+                        tem_midia=tem_midia,
+                        autor=str(event.sender_id)
+                    )
+
+            except Exception as msg_err:
+                logger.error(f"Erro fatal ao processar mensagem do Telegram: {msg_err}")
+    else:
+        # Se chats_para_escutar estiver vazio, escuta todos os diálogos novos e loga
+        @client.on(events.NewMessage())
+        async def handler_mensagem_geral(event):
+            try:
+                chat = await event.get_chat()
+                chat_title = getattr(chat, "title", str(event.chat_id))
+                texto = event.message.message or ""
+                logger.info(f"📡 [Fantasma - Todos os Chats] Mensagem em '{chat_title}' (ID: {event.chat_id}): {texto[:80]}...")
+            except Exception:
+                pass
+
     await client.run_until_disconnected()
 
 
@@ -422,4 +534,9 @@ def loop_escuta_bulletproof():
 
 
 if __name__ == "__main__":
-    loop_escuta_bulletproof()
+    modo = os.getenv("MODO_ESCUTA", "TELEGRAM").upper()
+    if modo == "TELEGRAM":
+        import asyncio
+        asyncio.run(iniciar_escuta_telethon_telegram())
+    else:
+        loop_escuta_bulletproof()

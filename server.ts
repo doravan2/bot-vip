@@ -34,6 +34,7 @@ import {
   resetWhatsAppSession,
   getRealWhatsAppGroups,
   getWhatsAppChannels,
+  joinWhatsAppChannelByLink,
   sendDirectReplicaDeal,
   dispatchPendingMeliOffer,
   handleIncomingTelegramMessage,
@@ -108,6 +109,10 @@ import {
   loadChatFilterConfig,
   saveChatFilterConfig,
 } from './src/server/chatFilterService.ts';
+import {
+  getScheduleSettings,
+  saveScheduleSettings,
+} from './src/server/scheduleService.ts';
 
 dotenv.config();
 
@@ -204,6 +209,16 @@ app.get('/api/chat-filter/config', (_req, res) => {
 app.post('/api/chat-filter/config', (req, res) => {
   const updated = saveChatFilterConfig(req.body || {});
   res.json({ success: true, config: updated });
+});
+
+// Agenda / Schedule Settings Routes
+app.get('/api/settings/schedule', (_req, res) => {
+  res.json({ success: true, schedule: getScheduleSettings() });
+});
+
+app.post('/api/settings/schedule', (req, res) => {
+  const updated = saveScheduleSettings(req.body?.schedule || []);
+  res.json({ success: true, schedule: updated, message: 'Configurações de agenda salvas com sucesso!' });
 });
 
 // Full System Backup Export & Import Endpoints
@@ -349,6 +364,36 @@ app.get('/api/whatsapp/canais', async (_req, res) => {
     });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || 'Falha ao buscar canais do WhatsApp' });
+  }
+});
+
+// Rota para cadastro manual de Canais do WhatsApp via Link
+app.post('/api/whatsapp/canais/adicionar', async (req, res) => {
+  try {
+    const { link, nome } = req.body;
+
+    if (!link) {
+      return res.status(400).json({ error: 'O link do canal é obrigatório.' });
+    }
+
+    // Chama o Baileys para resolver o link
+    const channelInfo = await joinWhatsAppChannelByLink(link);
+
+    // Se o usuário digitou um nome na UI, usamos ele. Senão, usamos o nome oficial do WhatsApp.
+    const finalName = nome?.trim() || channelInfo.name;
+
+    return res.json({
+      success: true,
+      message: `Canal "${finalName}" cadastrado com sucesso!`,
+      channel: {
+        id: channelInfo.id,
+        name: finalName,
+        inviteLink: link,
+        description: channelInfo.description,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Erro ao adicionar canal do WhatsApp.' });
   }
 });
 

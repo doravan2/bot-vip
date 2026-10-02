@@ -512,66 +512,6 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
         </button>
       </div>
 
-      {/* Telegram Live Listener Status Banner */}
-      <div className="p-4 rounded-2xl bg-[#141518] border border-[#22242a] flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-lg">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#0088cc]/15 border border-[#0088cc]/30 flex items-center justify-center text-[#29b6f6] shrink-0">
-            <Send className="w-5 h-5" />
-          </div>
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-black text-white">Escuta de Grupos/Canais do Telegram:</span>
-              {telegramPollingStatus?.active ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#00c978]/15 border border-[#00c978]/40 text-[#00c978]">
-                  ATIVA (LONG-POLLING)
-                </span>
-              ) : telegramPollingStatus?.botConnected ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/15 border border-amber-500/40 text-amber-400">
-                  CONECTADO
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-neutral-800 border border-neutral-700 text-neutral-400">
-                  DESCONECTADO
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-neutral-400">
-              {telegramPollingStatus?.botConnected
-                ? `Bot @${telegramPollingStatus.activeBotUsername || 'Telegram'} conectado. Mensagens enviadas em grupos/canais fontes do Telegram são capturadas e enviadas ao WhatsApp automaticamente!`
-                : 'Conecte seu bot do Telegram na aba Conexões para ativar o monitoramento automático de grupos do Telegram.'}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                const res = await fetch('/api/telegram/simulate-incoming', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    chatTitle: 'Atacado Game Ofertas',
-                    chatId: '@atacadogameofertas',
-                    rawText: '⚡ Super Oferta Telegram: https://www.mercadolivre.com.br/p/MLB12345678 com 30% OFF!',
-                  }),
-                });
-                const d = await res.json();
-                alert(d.success ? `✅ Sucesso! Mensagem capturada do Telegram e enviada ao WhatsApp!` : `Aviso: ${d.error || 'Verifique se há regras ativas'}`);
-              } catch (err: any) {
-                alert(`Erro ao testar: ${err?.message}`);
-              }
-            }}
-            className="px-3.5 py-2 rounded-xl bg-[#1e2026] hover:bg-[#282a34] text-neutral-300 hover:text-white text-xs font-bold border border-[#282a34] transition cursor-pointer flex items-center gap-1.5"
-            title="Simular mensagem recebida no Telegram e enviada para o WhatsApp"
-          >
-            <Send className="w-3.5 h-3.5 text-[#29b6f6]" />
-            <span>Testar Telegram ➔ WhatsApp</span>
-          </button>
-        </div>
-      </div>
-
       {/* Fontes Cards List */}
       {sourceGroups.length === 0 ? (
         <div className="p-12 rounded-3xl bg-[#141517] border border-[#22242a] text-center space-y-4">
@@ -804,6 +744,8 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
                       <div className="flex flex-wrap gap-1.5">
                         {sourcesList.map((src, i) => {
                           const isTg = src.startsWith('@') || src.toLowerCase().includes('telegram') || src.includes('t.me');
+                          const isChan = !isTg && (src.toLowerCase().includes('canal') || src.toLowerCase().includes('channel'));
+
                           return (
                             <span
                               key={`src-pill-${i}`}
@@ -813,7 +755,13 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
                                   : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
                               }`}
                             >
-                              {isTg ? <Send className="w-2.5 h-2.5" /> : <Smartphone className="w-2.5 h-2.5" />}
+                              {isTg ? (
+                                <Send className="w-3 h-3 text-[#29b6f6]" />
+                              ) : isChan ? (
+                                <Megaphone className="w-3 h-3 text-emerald-400" />
+                              ) : (
+                                <Users2 className="w-3 h-3 text-emerald-400" />
+                              )}
                               <span>{src}</span>
                               <button
                                 type="button"
@@ -854,16 +802,24 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
                       <div className="flex flex-wrap gap-1.5">
                         {targetsList.map((tgt, i) => {
                           const isTg = tgt.startsWith('@') || tgt.toLowerCase().includes('telegram') || tgt.includes('t.me');
+                          const isChan = !isTg && (tgt.toLowerCase().includes('canal') || tgt.toLowerCase().includes('channel'));
+
                           return (
                             <span
                               key={`tgt-pill-${i}`}
                               className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 border transition ${
                                 isTg
                                   ? 'bg-[#0088cc]/20 border-[#0088cc]/40 text-[#29b6f6]'
-                                  : 'bg-[#FF5722]/15 border-[#FF5722]/30 text-[#FF5722]'
+                                  : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
                               }`}
                             >
-                              {isTg ? <Send className="w-2.5 h-2.5" /> : <Smartphone className="w-2.5 h-2.5" />}
+                              {isTg ? (
+                                <Send className="w-3 h-3 text-[#29b6f6]" />
+                              ) : isChan ? (
+                                <Megaphone className="w-3 h-3 text-emerald-400" />
+                              ) : (
+                                <Users2 className="w-3 h-3 text-emerald-400" />
+                              )}
                               <span>{tgt}</span>
                               <button
                                 type="button"
@@ -955,8 +911,8 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
       {/* MODAL: CRIAR GRUPO FONTE COM BUSCA, AUTOCOMPLETE E MÚLTIPLOS GRUPOS */}
       {/* ========================================================================= */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in overflow-y-auto">
-          <div className="w-full max-w-xl bg-[#121214] border border-[#262832] rounded-3xl shadow-2xl overflow-hidden p-6 space-y-5 my-8 max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 sm:p-6 animate-in fade-in overflow-y-auto">
+          <div className="w-full max-w-5xl bg-[#121214] border border-[#262832] rounded-3xl shadow-2xl overflow-hidden p-6 sm:p-8 space-y-6 my-6 max-h-[92vh] flex flex-col">
             <div className="flex items-center justify-between pb-3 border-b border-[#20222a] shrink-0">
               <div className="space-y-0.5">
                 <h2 className="text-lg font-black text-white flex items-center gap-2">
@@ -978,9 +934,10 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleSaveSource} className="space-y-5 overflow-y-auto pr-1 flex-1">
-              {/* =================================================================== */}
-              {/* CAMPO 1: GRUPO FONTE (ORIGEM / CONCORRENTE) - MULTI-SELECT & BUSCA */}
+            <form onSubmit={handleSaveSource} className="space-y-6 overflow-y-auto pr-1 flex-1">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* =================================================================== */}
+                {/* CAMPO 1: GRUPO FONTE (ORIGEM / CONCORRENTE) - MULTI-SELECT & BUSCA */}
               {/* =================================================================== */}
               <div className="space-y-2 p-4 rounded-2xl bg-[#18191d] border border-[#272930]">
                 <div className="flex items-center justify-between">
@@ -1372,8 +1329,9 @@ export const FontesPanel: React.FC<FontesPanelProps> = ({
                   )}
                 </div>
               </div>
+            </div>
 
-              {/* Opções de Foto e Validação de Estoque */}
+            {/* Opções de Foto e Validação de Estoque */}
               <div className="space-y-3 pt-1">
                 <label className="flex items-start gap-3 p-3.5 bg-[#18191d] border border-[#262832] rounded-xl text-xs cursor-pointer hover:border-[#333644] transition">
                   <input

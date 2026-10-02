@@ -132,20 +132,43 @@ export function isTelegramTarget(tgt: string, platformHint?: string): boolean {
   if (!tgt) return false;
   if (platformHint && platformHint.toLowerCase() === 'whatsapp') return false;
   if (platformHint && platformHint.toLowerCase() === 'telegram') return true;
-  const raw = tgt.replace(/^\[Telegram\]\s*/i, '').trim();
-  if (raw.startsWith('@') || raw.startsWith('-100') || raw.includes('t.me') || raw.toLowerCase().includes('telegram')) {
+  // WhatsApp JIDs, prefixes or newsletters are always WhatsApp
+  if (
+    tgt.endsWith('@g.us') ||
+    tgt.endsWith('@newsletter') ||
+    tgt.startsWith('[WhatsApp]') ||
+    tgt.startsWith('[WA]')
+  ) {
+    return false;
+  }
+
+  if (tgt.startsWith('[Telegram]')) {
     return true;
   }
+
+  const raw = tgt.replace(/^\[(WhatsApp|Telegram)\]\s*/i, '').trim();
+
+  // Telegram direct formats (-100... ID, t.me link, or @username)
+  if (
+    raw.startsWith('-100') ||
+    raw.includes('t.me/') ||
+    (raw.startsWith('@') && !raw.endsWith('@newsletter') && !raw.endsWith('@g.us'))
+  ) {
+    return true;
+  }
+
   const channels = getTelegramChannels();
   const cleanTgt = raw.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!cleanTgt) return false;
+
   return channels.some((c) => {
     const cleanName = (c.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const cleanId = (c.chatId || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const cleanUser = (c.username || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     return (
-      (cleanName && (cleanName === cleanTgt || cleanName.includes(cleanTgt) || cleanTgt.includes(cleanName))) ||
-      (cleanId && (cleanId === cleanTgt || cleanTgt.includes(cleanId))) ||
-      (cleanUser && (cleanUser === cleanTgt || cleanTgt.includes(cleanUser)))
+      (cleanName && cleanName === cleanTgt) ||
+      (cleanId && (cleanId === cleanTgt || cleanId === `@${cleanTgt}`)) ||
+      (cleanUser && (cleanUser === cleanTgt || cleanUser === `@${cleanTgt}`))
     );
   });
 }
@@ -633,6 +656,16 @@ export async function processTelegramUpdate(update: any): Promise<{ success: boo
 
   const chat = msg.chat;
   if (!chat) return { success: true, handled: false };
+
+  // Filter out historical / delayed Telegram messages (> 90 seconds old)
+  const msgDateSeconds = msg.date || msg.forward_date || 0;
+  if (msgDateSeconds > 0) {
+    const ageSeconds = Math.round((Date.now() - msgDateSeconds * 1000) / 1000);
+    if (ageSeconds > 90) {
+      console.log(`[TelegramService] ⏳ Mensagem antiga do Telegram ignorada (${ageSeconds}s atrás).`);
+      return { success: true, handled: false };
+    }
+  }
 
   const chatId = String(chat.id);
   const chatTitle = chat.title || chat.username || String(chat.id);

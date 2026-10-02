@@ -9,6 +9,7 @@ import {
   Settings,
   Send,
   Megaphone,
+  Calendar,
 } from 'lucide-react';
 import { NavigationTab } from '../types/index.ts';
 
@@ -65,6 +66,12 @@ export const NAV_ITEMS: NavItemConfig[] = [
     label: 'Replica Chat',
     icon: Zap,
     description: 'Configuração de mensagens e templates',
+  },
+  {
+    id: 'agenda',
+    label: 'Agenda',
+    icon: Calendar,
+    description: 'Configure os dias e horários de execução da automação',
   },
   {
     id: 'configuracoes',

@@ -9,6 +9,7 @@ import { CanaisPanel } from './components/panels/CanaisPanel.tsx';
 import { ConexoesPanel } from './components/panels/ConexoesPanel.tsx';
 import { FontesPanel } from './components/panels/FontesPanel.tsx';
 import { ReplicaChatPanel } from './components/panels/ReplicaChatPanel.tsx';
+import { AgendaPanel } from './components/panels/AgendaPanel.tsx';
 import { ConfiguracoesPanel } from './components/panels/ConfiguracoesPanel.tsx';
 import {
   OFFICIAL_USER_AFFILIATE_ID,
@@ -184,13 +185,11 @@ export default function App() {
       localStorage.setItem('bot_vip_sources', JSON.stringify(sourceGroups));
     } catch {}
 
-    if (Array.isArray(sourceGroups) && sourceGroups.length > 0) {
-      fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: sourceGroups }),
-      }).catch((e) => console.warn('Erro ao sincronizar regras com backend:', e));
-    }
+    fetch('/api/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rules: sourceGroups }),
+    }).catch((e) => console.warn('Erro ao sincronizar regras com backend:', e));
   }, [sourceGroups]);
 
   // Real WhatsApp Connection Status Polling
@@ -347,7 +346,122 @@ export default function App() {
   };
 
   const handleDeleteGroup = (id: string) => {
-    setGroups(groups.filter((g) => g.id !== id));
+    const groupToDelete = groups.find((g) => g.id === id);
+    setGroups((prev) => prev.filter((g) => g.id !== id));
+
+    if (groupToDelete) {
+      setSourceGroups((prevSources) =>
+        prevSources
+          .map((rule) => {
+            const gName = groupToDelete.name?.toLowerCase().trim();
+            const chatId = groupToDelete.chatId?.toLowerCase().trim();
+            const gId = groupToDelete.id?.toLowerCase().trim();
+
+            const isMatch = (val?: string) => {
+              if (!val) return false;
+              const v = val.toLowerCase().trim();
+              return v === gName || (chatId && v === chatId) || (gId && v === gId);
+            };
+
+            const srcNames = rule.sourceNames || rule.sourceName.split(',').map((s) => s.trim());
+            const srcPlatforms = rule.sourcePlatforms || [];
+            const remainingSources = srcNames
+              .map((name, idx) => ({ name, platform: srcPlatforms[idx] || 'WhatsApp' }))
+              .filter((s) => !isMatch(s.name));
+
+            const tgtNames = rule.targetGroups || rule.targetGroup.split(',').map((t) => t.trim());
+            const tgtPlatforms = rule.targetPlatforms || [];
+            const tgtChatIds = rule.targetChatIds || [];
+            const remainingTargets = tgtNames
+              .map((name, idx) => ({
+                name,
+                platform: tgtPlatforms[idx] || 'WhatsApp',
+                chatId: tgtChatIds[idx] || '',
+              }))
+              .filter((t) => !isMatch(t.name) && !isMatch(t.chatId));
+
+            const newSrcNames = remainingSources.map((s) => s.name);
+            const newSrcPlatforms = remainingSources.map((s) => s.platform);
+            const newTgtNames = remainingTargets.map((t) => t.name);
+            const newTgtPlatforms = remainingTargets.map((t) => t.platform);
+            const newTgtChatIds = remainingTargets.map((t) => t.chatId);
+
+            return {
+              ...rule,
+              sourceName: newSrcNames.join(', '),
+              sourceNames: newSrcNames,
+              sourcePlatforms: newSrcPlatforms,
+              targetGroup: newTgtNames.join(', '),
+              targetGroups: newTgtNames,
+              targetPlatforms: newTgtPlatforms,
+              targetChatIds: newTgtChatIds,
+            };
+          })
+          .filter((rule) => rule.sourceNames.length > 0 && rule.targetGroups.length > 0)
+      );
+    }
+  };
+
+  const handleDeleteGroups = (ids: string[]) => {
+    const idSet = new Set(ids);
+    const groupsToDelete = groups.filter((g) => idSet.has(g.id));
+    setGroups((prev) => prev.filter((g) => !idSet.has(g.id)));
+
+    if (groupsToDelete.length > 0) {
+      setSourceGroups((prevSources) => {
+        let current = [...prevSources];
+        for (const groupToDelete of groupsToDelete) {
+          const gName = groupToDelete.name?.toLowerCase().trim();
+          const chatId = groupToDelete.chatId?.toLowerCase().trim();
+          const gId = groupToDelete.id?.toLowerCase().trim();
+
+          const isMatch = (val?: string) => {
+            if (!val) return false;
+            const v = val.toLowerCase().trim();
+            return v === gName || (chatId && v === chatId) || (gId && v === gId);
+          };
+
+          current = current
+            .map((rule) => {
+              const srcNames = rule.sourceNames || rule.sourceName.split(',').map((s) => s.trim());
+              const srcPlatforms = rule.sourcePlatforms || [];
+              const remainingSources = srcNames
+                .map((name, idx) => ({ name, platform: srcPlatforms[idx] || 'WhatsApp' }))
+                .filter((s) => !isMatch(s.name));
+
+              const tgtNames = rule.targetGroups || rule.targetGroup.split(',').map((t) => t.trim());
+              const tgtPlatforms = rule.targetPlatforms || [];
+              const tgtChatIds = rule.targetChatIds || [];
+              const remainingTargets = tgtNames
+                .map((name, idx) => ({
+                  name,
+                  platform: tgtPlatforms[idx] || 'WhatsApp',
+                  chatId: tgtChatIds[idx] || '',
+                }))
+                .filter((t) => !isMatch(t.name) && !isMatch(t.chatId));
+
+              const newSrcNames = remainingSources.map((s) => s.name);
+              const newSrcPlatforms = remainingSources.map((s) => s.platform);
+              const newTgtNames = remainingTargets.map((t) => t.name);
+              const newTgtPlatforms = remainingTargets.map((t) => t.platform);
+              const newTgtChatIds = remainingTargets.map((t) => t.chatId);
+
+              return {
+                ...rule,
+                sourceName: newSrcNames.join(', '),
+                sourceNames: newSrcNames,
+                sourcePlatforms: newSrcPlatforms,
+                targetGroup: newTgtNames.join(', '),
+                targetGroups: newTgtNames,
+                targetPlatforms: newTgtPlatforms,
+                targetChatIds: newTgtChatIds,
+              };
+            })
+            .filter((rule) => rule.sourceNames.length > 0 && rule.targetGroups.length > 0);
+        }
+        return current;
+      });
+    }
   };
 
   const handleAddGroup = (group: GroupChannel) => {
@@ -487,6 +601,7 @@ export default function App() {
               onToggleGroupActive={handleToggleGroupActive}
               onToggleAutoRotate={handleToggleAutoRotate}
               onDeleteGroup={handleDeleteGroup}
+              onDeleteGroups={handleDeleteGroups}
               onAddGroup={handleAddGroup}
               onAddGroups={handleAddGroups}
               onSyncAllGroups={handleSyncAllGroups}
@@ -548,7 +663,10 @@ export default function App() {
             />
           )}
 
-          {/* TAB 7: Configurações (Exportar/Baixar JSON de Todas as Abas) */}
+          {/* TAB 7: Agenda / Tempo */}
+          {currentTab === 'agenda' && <AgendaPanel />}
+
+          {/* TAB 8: Configurações (Exportar/Baixar JSON de Todas as Abas) */}
           {currentTab === 'configuracoes' && (
             <ConfiguracoesPanel
               groups={groups}

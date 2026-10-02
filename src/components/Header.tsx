@@ -35,6 +35,10 @@ const TAB_TITLES: Record<NavigationTab, { title: string; subtitle: string }> = {
     title: 'Replica Chat',
     subtitle: 'Configuração de mensagens, conversão de links e personalização de templates',
   },
+  agenda: {
+    title: 'Agenda / Tempo',
+    subtitle: 'Configure os dias, horários e intervalos de execução da automação',
+  },
   configuracoes: {
     title: 'Backup & Exportação de Configurações',
     subtitle: 'Salve, exporte e baixe todas as configurações de todas as abas em formato JSON',

@@ -22,6 +22,7 @@ import {
   Copy,
   Info,
   HelpCircle,
+  Megaphone,
 } from 'lucide-react';
 import { GroupChannel, WhatsAppInstance, SourceGroup, TelegramChannelItem } from '../../types/index.ts';
 
@@ -38,6 +39,7 @@ interface GruposPanelProps {
   onToggleGroupActive: (id: string) => void;
   onToggleAutoRotate: (id: string) => void;
   onDeleteGroup: (id: string) => void;
+  onDeleteGroups?: (ids: string[]) => void;
   onAddGroup: (grp: GroupChannel) => void;
   onAddGroups: (grps: GroupChannel[]) => void;
   onSyncAllGroups: () => Promise<void>;
@@ -52,6 +54,7 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
   onToggleGroupActive,
   onToggleAutoRotate,
   onDeleteGroup,
+  onDeleteGroups,
   onAddGroup,
   onAddGroups,
   onSyncAllGroups,
@@ -61,6 +64,66 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
 }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'info' | 'error'; message: string } | null>(null);
+
+  // Multi-select and Click-and-hold (long-press) state
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const longPressTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  const handleCardTouchStart = (groupId: string) => {
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = setTimeout(() => {
+      setIsSelectionMode(true);
+      setSelectedGroupIds((prev) => (prev.includes(groupId) ? prev : [...prev, groupId]));
+    }, 450);
+  };
+
+  const handleCardTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleToggleSelectGroup = (groupId: string) => {
+    setSelectedGroupIds((prev) => {
+      const next = prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId];
+      if (next.length === 0) setIsSelectionMode(false);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    const allIds = displayedGroups.map((g) => g.id);
+    if (selectedGroupIds.length === allIds.length) {
+      setSelectedGroupIds([]);
+    } else {
+      setSelectedGroupIds(allIds);
+      setIsSelectionMode(true);
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedGroupIds.length === 0) return;
+    if (
+      confirm(
+        `Deseja realmente apagar os ${selectedGroupIds.length} grupo(s) selecionado(s)? Esta ação removerá o monitoramento dessas fontes.`
+      )
+    ) {
+      if (onDeleteGroups) {
+        onDeleteGroups(selectedGroupIds);
+      } else {
+        selectedGroupIds.forEach((id) => onDeleteGroup(id));
+      }
+      setFeedback({
+        type: 'success',
+        message: `${selectedGroupIds.length} grupo(s) excluído(s) com sucesso!`,
+      });
+      setSelectedGroupIds([]);
+      setIsSelectionMode(false);
+      setTimeout(() => setFeedback(null), 4000);
+    }
+  };
 
   // Filter Subtabs: 'todos' | 'whatsapp' | 'telegram'
   const [activeFilterTab, setActiveFilterTab] = useState<'todos' | 'whatsapp' | 'telegram'>('todos');
@@ -384,18 +447,63 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
     });
   };
 
-  const handleAddManualGroup = (e: React.FormEvent) => {
+  const handleAddManualGroup = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!manualName.trim()) return;
+    if (!manualName.trim() && !manualLink.trim()) return;
+
+    const trimmedLink = manualLink.trim();
+    const isWaChannel = manualPlatform === 'WhatsApp' && trimmedLink.includes('whatsapp.com/channel/');
+
+    if (isWaChannel) {
+      try {
+        const res = await fetch('/api/whatsapp/canais/adicionar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nome: manualName.trim(),
+            link: trimmedLink,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const chan = data.channel;
+          const newGrp: GroupChannel = {
+            id: chan.id,
+            name: chan.name || manualName.trim(),
+            platform: 'WhatsApp',
+            type: 'channel',
+            chatId: chan.id,
+            inviteLink: trimmedLink,
+            membersCount: 1000,
+            maxCapacity: 1000000,
+            isActive: true,
+            autoRotate: false,
+            dispatchesToday: 0,
+          };
+          onAddGroup(newGrp);
+          setIsManualModalOpen(false);
+          setManualName('');
+          setManualLink('');
+          setFeedback({
+            type: 'success',
+            message: `Canal do WhatsApp "${newGrp.name}" (${chan.id}) cadastrado com sucesso!`,
+          });
+          setTimeout(() => setFeedback(null), 4000);
+          return;
+        }
+      } catch (err) {
+        console.warn('Falha ao resolver canal:', err);
+      }
+    }
 
     const newGrp: GroupChannel = {
       id: `grp-${Date.now()}`,
       instanceId: connectedInstances[0]?.id || 'inst-1',
-      name: manualName.trim(),
+      name: manualName.trim() || 'Novo Grupo',
       platform: manualPlatform,
       chatId: manualPlatform === 'Telegram' && manualName.startsWith('@') ? manualName : undefined,
       inviteLink:
-        manualLink.trim() ||
+        trimmedLink ||
         (manualPlatform === 'Telegram'
           ? `https://t.me/${manualName.replace(/^@/, '')}`
           : 'https://chat.whatsapp.com/'),
@@ -413,7 +521,7 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
     setManualMembers('1');
     setFeedback({
       type: 'success',
-      message: `Grupo ${manualName} (${manualPlatform}) adicionado com sucesso!`,
+      message: `Grupo ${newGrp.name} (${manualPlatform}) adicionado com sucesso!`,
     });
     setTimeout(() => setFeedback(null), 4000);
   };
@@ -754,21 +862,103 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
             </button>
           </div>
 
-          <p className="text-xs text-neutral-400">
-            Exibindo <strong>{displayedGroups.length}</strong> grupo(s) cadastrado(s)
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-neutral-400">
+              Exibindo <strong>{displayedGroups.length}</strong> grupo(s) cadastrado(s)
+            </p>
+            <button
+              type="button"
+              onClick={handleSelectAll}
+              className="px-3 py-1 rounded-xl bg-[#1f2026] hover:bg-[#282a32] text-xs font-bold text-neutral-300 hover:text-white border border-[#2e313c] transition cursor-pointer"
+            >
+              {selectedGroupIds.length === displayedGroups.length && displayedGroups.length > 0
+                ? 'Desmarcar Todos'
+                : 'Selecionar Tudo'}
+            </button>
+          </div>
         </div>
+
+        {/* Floating / Sticky Selection Bar */}
+        {(isSelectionMode || selectedGroupIds.length > 0) && (
+          <div className="p-4 rounded-2xl bg-[#FF5722]/10 border border-[#FF5722]/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in shadow-xl">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-[#FF5722] text-white flex items-center justify-center font-black text-xs">
+                {selectedGroupIds.length}
+              </div>
+              <div>
+                <h4 className="text-xs font-extrabold text-white">
+                  {selectedGroupIds.length} grupo(s) selecionado(s)
+                </h4>
+                <p className="text-[11px] text-neutral-400">
+                  Clique e segure ou marque as caixas para selecionar múltiplos grupos e apagar de uma vez.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleSelectAll}
+                className="px-3.5 py-1.5 rounded-xl bg-[#1e2026] hover:bg-[#282a34] text-white text-xs font-bold border border-[#2e313c] transition cursor-pointer flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>
+                  {selectedGroupIds.length === displayedGroups.length && displayedGroups.length > 0
+                    ? 'Desmarcar Todos'
+                    : 'Selecionar Tudo'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleBulkDelete}
+                className="px-4 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-extrabold transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-red-600/20"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Excluir Selecionados ({selectedGroupIds.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedGroupIds([]);
+                  setIsSelectionMode(false);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Groups Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {displayedGroups.map((g) => {
             const isTg = g.platform === 'Telegram';
+            const isChan = !isTg && (g.type === 'channel' || g.name.toLowerCase().includes('canal') || g.name.toLowerCase().includes('channel'));
+            const isSelected = selectedGroupIds.includes(g.id);
 
             return (
               <div
                 key={g.id}
-                className={`p-5 rounded-2xl bg-[#141517] border shadow-xl space-y-4 flex flex-col justify-between transition ${
-                  isTg ? 'border-[#0088cc]/30 hover:border-[#0088cc]/60' : 'border-[#22242a] hover:border-[#2e313c]'
+                onMouseDown={() => handleCardTouchStart(g.id)}
+                onMouseUp={handleCardTouchEnd}
+                onMouseLeave={handleCardTouchEnd}
+                onTouchStart={() => handleCardTouchStart(g.id)}
+                onTouchEnd={handleCardTouchEnd}
+                onClick={(e) => {
+                  if (isSelectionMode || selectedGroupIds.length > 0) {
+                    e.stopPropagation();
+                    handleToggleSelectGroup(g.id);
+                  }
+                }}
+                className={`p-5 rounded-2xl bg-[#141517] border shadow-xl space-y-4 flex flex-col justify-between transition select-none cursor-pointer relative ${
+                  isSelected
+                    ? 'border-[#FF5722] bg-[#1a1c20] ring-2 ring-[#FF5722]/50'
+                    : isTg
+                    ? 'border-[#0088cc]/30 hover:border-[#0088cc]/60'
+                    : 'border-[#22242a] hover:border-[#2e313c]'
                 }`}
               >
                 <div className="space-y-3">
@@ -780,16 +970,39 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
                           : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
                       }`}
                     >
-                      {isTg ? <Send className="w-3 h-3" /> : <Smartphone className="w-3 h-3" />}
-                      <span>{isTg ? 'Telegram' : 'WhatsApp'}</span>
+                      {isTg ? (
+                        <Send className="w-3 h-3 text-[#29b6f6]" />
+                      ) : isChan ? (
+                        <Megaphone className="w-3 h-3 text-emerald-400" />
+                      ) : (
+                        <Users2 className="w-3 h-3 text-emerald-400" />
+                      )}
+                      <span>{isTg ? 'Telegram' : isChan ? 'Canal WA' : 'WhatsApp'}</span>
                     </span>
 
-                    <button
-                      onClick={() => onDeleteGroup(g.id)}
-                      className="p-1.5 rounded-lg text-neutral-500 hover:text-red-400 transition cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleToggleSelectGroup(g.id);
+                        }}
+                        className="w-4 h-4 accent-[#FF5722] rounded cursor-pointer"
+                      />
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteGroup(g.id);
+                        }}
+                        title="Excluir grupo"
+                        className="p-1.5 rounded-lg text-neutral-500 hover:text-red-400 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
 
                   <div>
@@ -837,12 +1050,12 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
 
       {/* Modal: Criar Grupo Fonte Multi-Canal */}
       {isSourceModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in overflow-y-auto">
-          <div className="w-full max-w-xl bg-[#121214] border border-[#262832] rounded-3xl shadow-2xl overflow-hidden p-6 space-y-5 my-8 max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 sm:p-6 animate-in fade-in overflow-y-auto">
+          <div className="w-full max-w-5xl bg-[#121214] border border-[#262832] rounded-3xl shadow-2xl overflow-hidden p-6 sm:p-8 space-y-6 my-6 max-h-[92vh] flex flex-col">
             <div className="flex items-center justify-between pb-3 border-b border-[#20222a] shrink-0">
               <div className="space-y-0.5">
-                <h2 className="text-lg font-black text-white flex items-center gap-2">
-                  <Radio className="w-5 h-5 text-[#FF5722]" />
+                <h2 className="text-xl font-black text-white flex items-center gap-2.5">
+                  <Radio className="w-6 h-6 text-[#FF5722]" />
                   <span>Criar Grupo Fonte Multi-Canal</span>
                 </h2>
                 <p className="text-xs text-neutral-400">
@@ -857,8 +1070,9 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleCreateSourceGroup} className="space-y-5 overflow-y-auto pr-1 flex-1">
-              {/* Campo 1: Grupo Fonte */}
+            <form onSubmit={handleCreateSourceGroup} className="space-y-6 overflow-y-auto pr-1 flex-1">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Campo 1: Grupo Fonte */}
               <div className="space-y-2 p-4 rounded-2xl bg-[#18191d] border border-[#272930]">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-extrabold text-neutral-200 flex items-center gap-1.5">
@@ -1179,8 +1393,9 @@ export const GruposPanel: React.FC<GruposPanelProps> = ({
                   </div>
                 )}
               </div>
+            </div>
 
-              {/* Opções de Foto e Validação */}
+            {/* Opções de Foto e Validação */}
               <div className="space-y-3">
                 <label className="flex items-start gap-3 p-3.5 bg-[#18191d] border border-[#262832] rounded-xl text-xs cursor-pointer hover:border-[#333644] transition">
                   <input

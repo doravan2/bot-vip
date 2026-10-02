@@ -5,6 +5,7 @@ export type NavigationTab =
   | 'conexoes'
   | 'fontes'
   | 'replica-chat'
+  | 'agenda'
   | 'configuracoes';
 
 export interface ProductItem {

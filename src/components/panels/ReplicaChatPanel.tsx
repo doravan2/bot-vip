@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Zap,
   Sparkles,
@@ -31,6 +31,13 @@ import {
   Megaphone,
   X,
   Scissors,
+  Terminal,
+  Key,
+  Smartphone,
+  Play,
+  Square,
+  Lock,
+  Unlock,
 } from 'lucide-react';
 import { GroupChannel } from '../../types/index.ts';
 import { DEFAULT_VIP_GROUP_LINK } from '../../utils/affiliateEngine.ts';
@@ -65,8 +72,41 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
   vipGroupLink,
   onUpdateVipGroupLink,
 }) => {
-  // Tabs: 'rules' | 'connections' | 'watermark' | 'chat_filter'
-  const [activeTab, setActiveTab] = useState<'rules' | 'connections' | 'watermark' | 'chat_filter'>('rules');
+  // Tabs: 'rules' | 'connections' | 'telegram_fantasma' | 'watermark' | 'chat_filter'
+  const [activeTab, setActiveTab] = useState<'rules' | 'connections' | 'telegram_fantasma' | 'watermark' | 'chat_filter'>('rules');
+
+  // Telethon Modo Fantasma State
+  const [telethonForm, setTelethonForm] = useState({
+    apiId: '',
+    apiHash: '',
+    phone: '',
+  });
+  const [telethonStatus, setTelethonStatus] = useState<{
+    isRunning: boolean;
+    status: 'idle' | 'starting' | 'waiting_code' | 'waiting_2fa' | 'connected' | 'error' | 'stopped';
+    statusMessage: string;
+    lastCodeRequestedAt?: string;
+    lastConnectedAt?: string;
+    pid?: number;
+    config: {
+      apiId: string;
+      apiHashMasked: string;
+      phone: string;
+      hasApiHash: boolean;
+    };
+    recentLogs: string[];
+  } | null>(null);
+  const [telethonCodeInput, setTelethonCodeInput] = useState('');
+  const [isStartingTelethon, setIsStartingTelethon] = useState(false);
+  const [isStoppingTelethon, setIsStoppingTelethon] = useState(false);
+  const [isSavingTelethonConfig, setIsSavingTelethonConfig] = useState(false);
+  const [isSendingTelethonCode, setIsSendingTelethonCode] = useState(false);
+  const [telethonActionFeedback, setTelethonActionFeedback] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [showApiHash, setShowApiHash] = useState(false);
+  const [simulatedTgText, setSimulatedTgText] = useState('🔥 PROMOÇÃO RELÂMPAGO DO TELEGRAM!\nFone Bluetooth Sem Fio Air Dots Pro\nDe R$ 199,90 por R$ 89,90 no Pix!\nLink: https://meli.la/1pKTwSc\nEntre no canal concorrente: @promos_top');
+  const [isTestingSimulateTg, setIsTestingSimulateTg] = useState(false);
+  const [simulateTgNotice, setSimulateTgNotice] = useState<{ success: boolean; message: string } | null>(null);
+  const terminalBottomRef = useRef<HTMLDivElement | null>(null);
 
   // Marketplaces config state
   const [mpConfig, setMpConfig] = useState<MarketplacesConfigState>({});
@@ -140,10 +180,219 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
     }
   };
 
+  // Fetch Telethon Status & Configuration
+  const fetchTelethonStatus = async () => {
+    try {
+      const res = await fetch('/api/telegram/userbot/status');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status) {
+          setTelethonStatus(data.status);
+          if (data.status.config) {
+            setTelethonForm((prev) => ({
+              ...prev,
+              apiId: prev.apiId || data.status.config.apiId || '',
+              phone: prev.phone || data.status.config.phone || '',
+            }));
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Erro ao buscar status do Telethon:', e);
+    }
+  };
+
   useEffect(() => {
     fetchWatermarkConfig();
     fetchChatFilterConfig();
+    fetchTelethonStatus();
   }, []);
+
+  // Polling for Telethon Status & Live Logs (Every 3 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchTelethonStatus();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleSaveTelethonConfig = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingTelethonConfig(true);
+    try {
+      const res = await fetch('/api/telegram/userbot/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(telethonForm),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTelethonActionFeedback({
+          type: 'success',
+          message: 'Configurações do Telethon salvas com sucesso no servidor!',
+        });
+        fetchTelethonStatus();
+      } else {
+        setTelethonActionFeedback({
+          type: 'error',
+          message: data.error || data.message || 'Falha ao salvar configurações do Telethon.',
+        });
+      }
+    } catch (err: any) {
+      setTelethonActionFeedback({
+        type: 'error',
+        message: err?.message || 'Erro ao conectar com servidor.',
+      });
+    } finally {
+      setIsSavingTelethonConfig(false);
+      setTimeout(() => setTelethonActionFeedback(null), 5000);
+    }
+  };
+
+  const handleStartTelethon = async () => {
+    setIsStartingTelethon(true);
+    try {
+      // Save config first if filled
+      if (telethonForm.apiId && telethonForm.phone) {
+        await fetch('/api/telegram/userbot/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(telethonForm),
+        });
+      }
+
+      const res = await fetch('/api/telegram/userbot/start', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTelethonActionFeedback({
+          type: 'success',
+          message: data.message || 'Motor Fantasma do Telegram iniciado!',
+        });
+        fetchTelethonStatus();
+      } else {
+        setTelethonActionFeedback({
+          type: 'error',
+          message: data.message || 'Falha ao iniciar Motor Fantasma.',
+        });
+      }
+    } catch (err: any) {
+      setTelethonActionFeedback({
+        type: 'error',
+        message: err?.message || 'Erro ao iniciar processo.',
+      });
+    } finally {
+      setIsStartingTelethon(false);
+      setTimeout(() => setTelethonActionFeedback(null), 6000);
+    }
+  };
+
+  const handleStopTelethon = async () => {
+    setIsStoppingTelethon(true);
+    try {
+      const res = await fetch('/api/telegram/userbot/stop', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTelethonActionFeedback({
+          type: 'info',
+          message: data.message || 'Motor Fantasma pausado.',
+        });
+        fetchTelethonStatus();
+      } else {
+        setTelethonActionFeedback({
+          type: 'error',
+          message: data.message || 'Falha ao pausar motor.',
+        });
+      }
+    } catch (err: any) {
+      setTelethonActionFeedback({
+        type: 'error',
+        message: err?.message || 'Erro ao parar processo.',
+      });
+    } finally {
+      setIsStoppingTelethon(false);
+      setTimeout(() => setTelethonActionFeedback(null), 5000);
+    }
+  };
+
+  const handleSendTelethonCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!telethonCodeInput.trim()) return;
+
+    setIsSendingTelethonCode(true);
+    try {
+      const res = await fetch('/api/telegram/userbot/send-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codigo: telethonCodeInput.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTelethonActionFeedback({
+          type: 'success',
+          message: `✅ Código ${telethonCodeInput} enviado ao Telethon com sucesso!`,
+        });
+        setTelethonCodeInput('');
+        fetchTelethonStatus();
+      } else {
+        setTelethonActionFeedback({
+          type: 'error',
+          message: data.error || data.message || 'Falha ao enviar código.',
+        });
+      }
+    } catch (err: any) {
+      setTelethonActionFeedback({
+        type: 'error',
+        message: err?.message || 'Erro ao enviar código.',
+      });
+    } finally {
+      setIsSendingTelethonCode(false);
+      setTimeout(() => setTelethonActionFeedback(null), 6000);
+    }
+  };
+
+  const handleClearTelethonLogs = async () => {
+    try {
+      await fetch('/api/telegram/userbot/clear-logs', { method: 'POST' });
+      fetchTelethonStatus();
+    } catch {}
+  };
+
+  const handleTestSimulateTelegramIncoming = async () => {
+    if (!simulatedTgText.trim()) return;
+    setIsTestingSimulateTg(true);
+    setSimulateTgNotice(null);
+    try {
+      const res = await fetch('/api/telegram/simulate-incoming', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rawText: simulatedTgText,
+          chatTitle: 'Canal Telegram Teste',
+          chatId: '@canal_teste_vip',
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSimulateTgNotice({
+          success: true,
+          message: `Oferta convertida e enviada com sucesso para os grupos WhatsApp vinculados!`,
+        });
+      } else {
+        setSimulateTgNotice({
+          success: false,
+          message: data.error || data.message || 'Verifique se há regras ativas vinculando este canal na aba Fontes.',
+        });
+      }
+    } catch (err: any) {
+      setSimulateTgNotice({
+        success: false,
+        message: err?.message || 'Erro ao testar envio.',
+      });
+    } finally {
+      setIsTestingSimulateTg(false);
+      setTimeout(() => setSimulateTgNotice(null), 8000);
+    }
+  };
 
   const handleSaveWatermarkConfig = async (updatedConfig?: Partial<WatermarkConfigState>) => {
     setIsSavingWm(true);
@@ -732,6 +981,42 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
           <span>Marketplaces Connections</span>
           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-black/40 text-white border border-white/10">
             {activeCount}/6 ativos
+          </span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTab('telegram_fantasma');
+            fetchTelethonStatus();
+          }}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-extrabold transition cursor-pointer whitespace-nowrap ${
+            activeTab === 'telegram_fantasma'
+              ? 'bg-[#0088cc] text-white shadow-lg shadow-[#0088cc]/30'
+              : 'bg-[#141517] text-neutral-400 hover:text-white hover:bg-[#1a1b1f]'
+          }`}
+        >
+          <Send className="w-4 h-4 text-[#29b6f6]" />
+          <span>Modo Fantasma Telegram (Telethon)</span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-[10px] font-mono border ${
+              telethonStatus?.status === 'connected'
+                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 font-bold'
+                : telethonStatus?.status === 'waiting_code' || telethonStatus?.status === 'waiting_2fa'
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse font-bold'
+                : telethonStatus?.isRunning
+                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+            }`}
+          >
+            {telethonStatus?.status === 'connected'
+              ? 'CONECTADO'
+              : telethonStatus?.status === 'waiting_code'
+              ? 'DIGITAR CÓDIGO'
+              : telethonStatus?.status === 'waiting_2fa'
+              ? 'DIGITAR 2FA'
+              : telethonStatus?.isRunning
+              ? 'INICIANDO'
+              : 'DESLIGADO'}
           </span>
         </button>
 
@@ -1473,6 +1758,456 @@ export const ReplicaChatPanel: React.FC<ReplicaChatPanelProps> = ({
                 >
                   <Power className="w-3.5 h-3.5" />
                   <span>{mpConfig.temu?.enabled !== false ? 'Desativar Instância' : 'Ativar Instância'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB: MODO FANTASMA TELEGRAM (TELETHON PROCESS MANAGER) */}
+      {activeTab === 'telegram_fantasma' && (
+        <div className="space-y-6 animate-in fade-in">
+          {/* Hero & Process Control Card */}
+          <div className="p-6 sm:p-8 rounded-3xl bg-[#12151c] border border-[#0088cc]/30 shadow-2xl space-y-6 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-[#0088cc]/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
+
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 pb-6 border-b border-[#1c2230]">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#0088cc] to-[#29b6f6] flex items-center justify-center text-white shadow-xl shadow-[#0088cc]/30 shrink-0">
+                  <Send className="w-7 h-7" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h2 className="text-xl font-black text-white tracking-tight">
+                      Modo Fantasma Telegram (Telethon)
+                    </h2>
+                    <span
+                      className={`px-3 py-0.5 rounded-full text-[11px] font-mono font-black border uppercase tracking-wider ${
+                        telethonStatus?.status === 'connected'
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-sm'
+                          : telethonStatus?.status === 'waiting_code' || telethonStatus?.status === 'waiting_2fa'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                          : telethonStatus?.isRunning
+                          ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                          : 'bg-neutral-800 text-neutral-400 border-neutral-700'
+                      }`}
+                    >
+                      {telethonStatus?.status === 'connected'
+                        ? '● Fantasma Conectado & Escutando'
+                        : telethonStatus?.status === 'waiting_code'
+                        ? '● Aguardando Código de Login'
+                        : telethonStatus?.status === 'waiting_2fa'
+                        ? '● Aguardando Senha 2FA'
+                        : telethonStatus?.isRunning
+                        ? '● Iniciando Processo...'
+                        : '○ Motor Fantasma Desligado'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-400 mt-1 max-w-2xl">
+                    Escuta canais e grupos concorrentes do Telegram (mesmo onde você não é admin) através da sua conta pessoal usando a biblioteca oficial Telethon e replica diretamente para os seus grupos VIP do WhatsApp.
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons: Start / Stop */}
+              <div className="flex items-center gap-3 shrink-0">
+                {telethonStatus?.isRunning ? (
+                  <button
+                    type="button"
+                    onClick={handleStopTelethon}
+                    disabled={isStoppingTelethon}
+                    className="px-5 py-3 rounded-2xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/40 text-xs font-black transition flex items-center gap-2 cursor-pointer disabled:opacity-50 shadow-lg shadow-red-500/10"
+                  >
+                    {isStoppingTelethon ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Parando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Square className="w-4 h-4 fill-current" />
+                        <span>Pausar Motor Fantasma</span>
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartTelethon}
+                    disabled={isStartingTelethon}
+                    className="px-6 py-3 rounded-2xl bg-gradient-to-r from-[#0088cc] to-[#00b4d8] hover:from-[#0077b5] hover:to-[#0096c7] text-white text-xs font-black shadow-xl shadow-[#0088cc]/30 transition flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {isStartingTelethon ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Iniciando Motor...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4 fill-current" />
+                        <span>Iniciar Motor Fantasma (Telethon)</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={fetchTelethonStatus}
+                  className="p-3 rounded-2xl bg-[#181d28] hover:bg-[#202738] text-neutral-300 hover:text-white border border-[#283248] transition cursor-pointer"
+                  title="Atualizar Status do Processo"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Feedback message banner */}
+            {telethonActionFeedback && (
+              <div
+                className={`p-4 rounded-2xl text-xs font-bold flex items-center justify-between gap-3 animate-in fade-in ${
+                  telethonActionFeedback.type === 'success'
+                    ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-300'
+                    : telethonActionFeedback.type === 'info'
+                    ? 'bg-[#0088cc]/15 border border-[#0088cc]/40 text-[#29b6f6]'
+                    : 'bg-red-500/15 border border-red-500/40 text-red-300'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  {telethonActionFeedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  ) : telethonActionFeedback.type === 'info' ? (
+                    <Info className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{telethonActionFeedback.message}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTelethonActionFeedback(null)}
+                  className="text-neutral-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Code / 2FA Interactive Card (High Priority when Telethon requests auth) */}
+            {(telethonStatus?.status === 'waiting_code' || telethonStatus?.status === 'waiting_2fa' || telethonStatus?.isRunning) && (
+              <div className="p-6 rounded-2xl bg-gradient-to-r from-amber-500/10 via-[#181d28] to-[#0088cc]/10 border-2 border-amber-500/50 shadow-2xl space-y-4 animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300 font-bold shrink-0">
+                      <Key className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black text-white flex items-center gap-2">
+                        <span>
+                          {telethonStatus?.status === 'waiting_2fa'
+                            ? '🔐 Senha 2FA do Telegram Necessária'
+                            : '📲 Código de Login do Telegram Necessário'}
+                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-bold">
+                          Ação Necessária
+                        </span>
+                      </h3>
+                      <p className="text-xs text-neutral-300 mt-0.5">
+                        {telethonStatus?.status === 'waiting_2fa'
+                          ? 'Sua conta possui verificação em duas etapas (2FA). Digite sua senha abaixo para liberar a escuta.'
+                          : 'O Telegram enviou um código de 5 dígitos para o seu aplicativo no celular. Digite-o abaixo para autenticar instantaneamente!'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <form onSubmit={handleSendTelethonCode} className="flex flex-col sm:flex-row gap-3 pt-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={telethonCodeInput}
+                      onChange={(e) => setTelethonCodeInput(e.target.value)}
+                      placeholder={
+                        telethonStatus?.status === 'waiting_2fa'
+                          ? 'Digite sua senha 2FA do Telegram...'
+                          : 'Digite o código de 5 dígitos (ex: 83921)...'
+                      }
+                      className="w-full px-4 py-3.5 rounded-xl bg-[#0f1218] border border-amber-500/40 text-white font-mono text-sm tracking-wider focus:outline-none focus:border-amber-400 placeholder:text-neutral-500 shadow-inner"
+                      autoFocus
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isSendingTelethonCode || !telethonCodeInput.trim()}
+                    className="px-6 py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-[#FF5722] hover:from-amber-600 hover:to-[#e64a19] text-white text-xs font-black shadow-lg shadow-amber-500/20 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    {isSendingTelethonCode ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Enviando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4" />
+                        <span>Enviar Código ao Motor</span>
+                      </>
+                    )}
+                  </button>
+                </form>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[11px] text-neutral-400 gap-2 pt-1 border-t border-white/5">
+                  <span>💡 Você também pode abrir no navegador: <strong className="text-[#29b6f6] font-mono">http://localhost:3000/api/telegram/enviar-codigo/SEU_CODIGO</strong></span>
+                  <span className="text-neutral-500">O Python captura o código a cada 3s automaticamente via Webhook Bridge.</span>
+                </div>
+              </div>
+            )}
+
+            {/* Grid 2 Columns: Credentials Configuration & Live Terminal Console */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Column 1: Credentials Form (5 Cols) */}
+              <div className="lg:col-span-5 p-6 rounded-2xl bg-[#16181f] border border-[#242938] space-y-5">
+                <div className="flex items-center justify-between pb-3 border-b border-[#242938]">
+                  <div className="flex items-center gap-2">
+                    <Key className="w-4 h-4 text-[#29b6f6]" />
+                    <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
+                      Credenciais do Telethon
+                    </h3>
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded-md bg-[#0088cc]/15 text-[#29b6f6] font-mono font-bold">
+                    .env Auto-Sync
+                  </span>
+                </div>
+
+                <form onSubmit={handleSaveTelethonConfig} className="space-y-4">
+                  {/* API ID */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-neutral-300 flex items-center justify-between">
+                      <span>TELEGRAM_API_ID</span>
+                      <span className="text-[10px] text-neutral-500">Apenas números</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={telethonForm.apiId}
+                      onChange={(e) => setTelethonForm({ ...telethonForm, apiId: e.target.value })}
+                      placeholder="Ex: 23819482"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#0f1117] border border-[#2c3244] text-white font-mono text-xs focus:outline-none focus:border-[#0088cc]"
+                    />
+                  </div>
+
+                  {/* API HASH */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-neutral-300 flex items-center justify-between">
+                      <span>TELEGRAM_API_HASH</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowApiHash(!showApiHash)}
+                        className="text-[10px] text-[#29b6f6] hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        {showApiHash ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+                        <span>{showApiHash ? 'Ocultar' : 'Mostrar'}</span>
+                      </button>
+                    </label>
+                    <input
+                      type={showApiHash ? 'text' : 'password'}
+                      value={telethonForm.apiHash}
+                      onChange={(e) => setTelethonForm({ ...telethonForm, apiHash: e.target.value })}
+                      placeholder={telethonStatus?.config?.hasApiHash ? '(Hash já salvo - digite para alterar)' : 'Ex: 9a8b7c6d5e4f3a2b1c...'}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#0f1117] border border-[#2c3244] text-white font-mono text-xs focus:outline-none focus:border-[#0088cc]"
+                    />
+                  </div>
+
+                  {/* Phone */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-neutral-300 flex items-center justify-between">
+                      <span>TELEGRAM_PHONE</span>
+                      <span className="text-[10px] text-neutral-500">Com DDI + DDD</span>
+                    </label>
+                    <div className="relative">
+                      <Smartphone className="w-4 h-4 text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={telethonForm.phone}
+                        onChange={(e) => setTelethonForm({ ...telethonForm, phone: e.target.value })}
+                        placeholder="+5511999999999"
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#0f1117] border border-[#2c3244] text-white font-mono text-xs focus:outline-none focus:border-[#0088cc]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex items-center gap-3">
+                    <button
+                      type="submit"
+                      disabled={isSavingTelethonConfig}
+                      className="flex-1 py-2.5 px-4 rounded-xl bg-[#0088cc] hover:bg-[#0077b5] text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-[#0088cc]/20 disabled:opacity-50"
+                    >
+                      {isSavingTelethonConfig ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                      )}
+                      <span>Salvar Credenciais</span>
+                    </button>
+                  </div>
+                </form>
+
+                {/* Quick Helper Box */}
+                <div className="p-3.5 rounded-xl bg-[#0f121a] border border-[#1e2436] space-y-2 text-[11px]">
+                  <div className="flex items-center justify-between text-neutral-300 font-bold">
+                    <span>Como obter seu API ID e Hash:</span>
+                    <a
+                      href="https://my.telegram.org/auth"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[#29b6f6] hover:underline flex items-center gap-1 font-mono text-[10px]"
+                    >
+                      <span>my.telegram.org</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <ol className="list-decimal list-inside space-y-1 text-neutral-400 leading-relaxed">
+                    <li>Acesse <strong>my.telegram.org</strong> e faça login com seu telefone.</li>
+                    <li>Clique em <strong>API development tools</strong>.</li>
+                    <li>Crie um app rápido (ex: nome <em>Bot Ofertas</em>) e copie o <strong>App api_id</strong> e <strong>App api_hash</strong>.</li>
+                  </ol>
+                </div>
+              </div>
+
+              {/* Column 2: Live Python Logs Console (7 Cols) */}
+              <div className="lg:col-span-7 p-6 rounded-2xl bg-[#0c0e14] border border-[#1e2332] flex flex-col justify-between space-y-4 shadow-xl">
+                <div className="flex items-center justify-between pb-3 border-b border-[#1e2332]">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-emerald-400" />
+                    <h3 className="text-xs font-extrabold text-white uppercase tracking-wider flex items-center gap-2">
+                      <span>Console ao Vivo do Python</span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                    </h3>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-neutral-500 font-mono">
+                      {(telethonStatus?.recentLogs || []).length} linhas
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleClearTelethonLogs}
+                      className="px-2.5 py-1 rounded-lg bg-[#161a24] hover:bg-[#202636] text-neutral-400 hover:text-white text-[10px] font-bold border border-[#252c3e] transition cursor-pointer"
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                </div>
+
+                {/* Console Log Output */}
+                <div className="h-72 overflow-y-auto bg-[#07080c] rounded-xl p-3.5 font-mono text-[11px] leading-relaxed text-neutral-300 border border-[#161a26] space-y-1 select-text">
+                  {(!telethonStatus?.recentLogs || telethonStatus.recentLogs.length === 0) ? (
+                    <div className="h-full flex flex-col items-center justify-center text-neutral-600 text-center space-y-1.5 p-4">
+                      <Terminal className="w-6 h-6 opacity-40 text-neutral-500" />
+                      <p>Nenhum log registrado ainda.</p>
+                      <p className="text-[10px] text-neutral-600">
+                        Clique em <strong>"Iniciar Motor Fantasma"</strong> acima para ver a inicialização e escuta das mensagens em tempo real.
+                      </p>
+                    </div>
+                  ) : (
+                    telethonStatus.recentLogs.map((line, idx) => {
+                      const isError = line.includes('❌') || line.includes('Erro') || line.includes('error') || line.includes('STDERR');
+                      const isSuccess = line.includes('✅') || line.includes('Sucesso') || line.includes('CONECTADO');
+                      const isWarn = line.includes('⚠️') || line.includes('Aviso') || line.includes('CÓDIGO') || line.includes('2FA');
+                      const isDeal = line.includes('📡') || line.includes('🎯') || line.includes('LINK DETECTADO') || line.includes('Oferta');
+
+                      return (
+                        <div
+                          key={idx}
+                          className={`break-all py-0.5 ${
+                            isError
+                              ? 'text-red-400 bg-red-500/5 px-1 rounded'
+                              : isSuccess
+                              ? 'text-emerald-400 font-bold'
+                              : isWarn
+                              ? 'text-amber-300'
+                              : isDeal
+                              ? 'text-[#29b6f6] font-bold'
+                              : 'text-neutral-400'
+                          }`}
+                        >
+                          {line}
+                        </div>
+                      );
+                    })
+                  )}
+                  <div ref={terminalBottomRef} />
+                </div>
+
+                {/* Console Status Footer */}
+                <div className="pt-2 border-t border-[#181d2a] flex items-center justify-between text-[11px] text-neutral-400">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-neutral-500">Script:</span>
+                    <span className="text-neutral-300 font-mono">scripts/escuta_grupos.py</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-neutral-500">PID:</span>
+                    <span className="text-emerald-400 font-mono">{telethonStatus?.pid || 'Inativo'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Test Simulation Telegram -> WhatsApp */}
+            <div className="p-6 rounded-2xl bg-[#141720] border border-[#202738] space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-[#202738]">
+                <div className="flex items-center gap-2.5">
+                  <Sparkles className="w-4 h-4 text-[#FF5722]" />
+                  <h3 className="text-xs font-extrabold text-white uppercase tracking-wider">
+                    Simulador Rápido: Telegram ➔ WhatsApp VIP
+                  </h3>
+                </div>
+                <span className="text-[10px] text-neutral-400">
+                  Testa se o pipeline converte os links e envia para o WhatsApp
+                </span>
+              </div>
+
+              {simulateTgNotice && (
+                <div
+                  className={`p-3.5 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+                    simulateTgNotice.success
+                      ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+                      : 'bg-red-500/10 border border-red-500/30 text-red-400'
+                  }`}
+                >
+                  {simulateTgNotice.success ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{simulateTgNotice.message}</span>
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <textarea
+                  rows={3}
+                  value={simulatedTgText}
+                  onChange={(e) => setSimulatedTgText(e.target.value)}
+                  placeholder="Cole aqui o texto da mensagem com link que seria postada no canal do Telegram..."
+                  className="flex-1 p-3 bg-[#0d0f14] border border-[#283044] rounded-xl text-xs text-white font-mono focus:outline-none focus:border-[#0088cc]"
+                />
+                <button
+                  type="button"
+                  onClick={handleTestSimulateTelegramIncoming}
+                  disabled={isTestingSimulateTg || !simulatedTgText.trim()}
+                  className="px-5 py-3 rounded-xl bg-gradient-to-r from-[#0088cc] to-[#29b6f6] hover:from-[#0077b5] hover:to-[#0288d1] text-white text-xs font-black shadow-lg shadow-[#0088cc]/20 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 sm:w-48 shrink-0"
+                >
+                  {isTestingSimulateTg ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Replicando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-4 h-4" />
+                      <span>Testar Replicação</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>

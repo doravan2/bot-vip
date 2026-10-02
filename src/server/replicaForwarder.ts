@@ -82,26 +82,7 @@ const storageDir = path.resolve(process.cwd(), '.whatsapp_auth');
 const rulesFilePath = path.resolve(storageDir, 'source_rules.json');
 const logsFilePath = path.resolve(storageDir, 'replica_logs.json');
 
-const DEFAULT_FALLBACK_RULES: ActiveSourceRule[] = [
-  {
-    id: 'source-default-1',
-    sourceName: 'teste 1, garimpeiros geral, Atacado Vip Ofertas, Atacado Game Ofertas',
-    sourceNames: ['teste 1', 'garimpeiros geral', 'Atacado Vip Ofertas', 'Atacado Game Ofertas'],
-    platform: 'Misto',
-    sourcePlatforms: ['WhatsApp', 'Telegram', 'Telegram', 'Telegram'],
-    targetGroup: 'teste 2',
-    targetGroups: ['teste 2'],
-    targetPlatforms: ['WhatsApp'],
-    targetChatIds: [''],
-    autoForward: true,
-    filterCompetitorNames: true,
-    autoFetchProductImage: true,
-    validateMeliStock: true,
-    status: 'monitoring',
-    dealsCapturedToday: 0,
-    createdAt: '08:00:00',
-  },
-];
+const DEFAULT_FALLBACK_RULES: ActiveSourceRule[] = [];
 
 let inMemoryRules: ActiveSourceRule[] = [];
 let inMemoryLogs: ClonedEventLog[] = [];

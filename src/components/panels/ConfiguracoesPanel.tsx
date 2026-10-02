@@ -67,6 +67,8 @@ export const ConfiguracoesPanel: React.FC<ConfiguracoesPanelProps> = ({
         // Marketplaces & Afiliados
         marketplacesConfig: serverBackup.marketplacesConfig || {},
         affiliateSettings: serverBackup.affiliateSettings || {},
+        // Agenda & Cooldown
+        agendaConfig: serverBackup.agendaConfig || {},
         // Grupos & Canais
         groups: groups,
         telegramChannels: serverBackup.telegramChannels || [],
@@ -163,6 +165,11 @@ export const ConfiguracoesPanel: React.FC<ConfiguracoesPanelProps> = ({
       }
 
       // Atualiza localStorage se houver dados locais
+      if (parsed.agendaConfig) {
+        try {
+          localStorage.setItem('bot_vip_agenda', JSON.stringify(parsed.agendaConfig));
+        } catch {}
+      }
       if (Array.isArray(parsed.groups)) {
         try {
           localStorage.setItem('bot_vip_groups', JSON.stringify(parsed.groups));
