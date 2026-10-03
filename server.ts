@@ -1716,7 +1716,12 @@ app.post('/api/replica/simulate-incoming', async (req, res) => {
         console.log(`[Replica Zap] ⏳ Produto sem imagem original. Conversão concluída! Aguardando o próprio link gerar e carregar a imagem: "${candidateUrl}"...`);
         await new Promise((resolve) => setTimeout(resolve, 1800));
         try {
-          const loadedImg = await fetchProductImageUrl(candidateUrl);
+          const productTitle = (cleanedCopy || rawText || '')
+            .split('\n')[0]
+            .replace(/^[💥🔥⚡🎉📢🚨🛒✨👉💵🎟]+/gu, '')
+            .replace(/(?:VALOR|CUPOM|R\$|\bhttps?:\/\/).*$/gis, '')
+            .trim();
+          const loadedImg = await fetchProductImageUrl(candidateUrl, productTitle);
           if (loadedImg) {
             foto_para_enviar = loadedImg;
             console.log(`[Replica Zap] 📸 Imagem gerada pelo próprio link carregada com sucesso: ${foto_para_enviar}`);

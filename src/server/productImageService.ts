@@ -169,17 +169,121 @@ print(json.dumps({'success': False}))
 }
 
 /**
+ * Resolves high-resolution Shopee product image using shortlink expansion and Facebook crawler UA
+ */
+export async function resolveShopeeProductImageUrl(url: string): Promise<string | null> {
+  try {
+    let target = url.trim();
+    if (target.includes('s.shopee.com.br') || target.includes('shope.ee')) {
+      const r = await fetch(target, {
+        headers: { 'User-Agent': BROWSER_USER_AGENT },
+        redirect: 'manual',
+      });
+      const loc = r.headers.get('location');
+      if (loc) target = loc;
+    }
+
+    const m = target.match(/(?:-i\.|\/product\/|\/opaanlp\/|\.i\.)(\d+)[./](\d+)/i) ||
+              target.match(/(?:shopid=)(\d+).*(?:itemid=)(\d+)/i);
+    let fetchUrl = target;
+    if (m && m[1] && m[2]) {
+      fetchUrl = `https://shopee.com.br/product/${m[1]}/${m[2]}`;
+    }
+
+    const sRes = await fetch(fetchUrl, {
+      headers: {
+        'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+    if (sRes.ok) {
+      const html = await sRes.text();
+      const og = html.match(/<meta[^>]+property=[\"']og:image[\"'][^>]+content=[\"']([^\"']+)[\"']/i) ||
+                 html.match(/<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+property=[\"']og:image[\"']/i);
+      if (og && og[1]) {
+        return upgradeImageUrlToHighRes(og[1]);
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Searches for official product photo by product title as a 100% reliable safety net
+ */
+export async function searchProductImageByName(productTitle: string): Promise<string | null> {
+  if (!productTitle || typeof productTitle !== 'string') return null;
+  const cleanQuery = productTitle
+    .replace(/^[💥🔥⚡🎉📢🚨🛒✨👉💵🎟]+/gu, '')
+    .replace(/(?:VALOR|CUPOM|R\$|\bhttps?:\/\/|\bGRUPO|\bCompartilhe).*$/gis, '')
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .trim()
+    .slice(0, 90);
+
+  if (cleanQuery.length < 4) return null;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const tokenRes = await fetch(
+      `https://duckduckgo.com/?q=${encodeURIComponent(cleanQuery)}&t=h_&iax=images&ia=images`,
+      {
+        headers: { 'User-Agent': BROWSER_USER_AGENT },
+        signal: controller.signal,
+      }
+    );
+    const tokenHtml = await tokenRes.text();
+    const vqdMatch = tokenHtml.match(/vqd=[\"']?([^\"'&]+)/i) || tokenHtml.match(/vqd:\s*\"([^\"]+)\"/i);
+    const vqd = vqdMatch ? vqdMatch[1] : null;
+    if (!vqd) {
+      clearTimeout(timeout);
+      return null;
+    }
+
+    const imgRes = await fetch(
+      `https://duckduckgo.com/i.js?l=wt-wt&o=json&q=${encodeURIComponent(cleanQuery)}&vqd=${vqd}&f=,,,`,
+      {
+        headers: { 'User-Agent': BROWSER_USER_AGENT },
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timeout);
+    if (!imgRes.ok) return null;
+    const imgData: any = await imgRes.json();
+    if (Array.isArray(imgData.results) && imgData.results.length > 0) {
+      const best = imgData.results.find((r: any) => r.image && !r.image.includes('placeholder')) || imgData.results[0];
+      if (best?.image) {
+        return upgradeImageUrlToHighRes(best.image);
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
  * Extracts the official product image URL from a product link
  */
-export async function fetchProductImageUrl(productUrl: string): Promise<string | null> {
-  if (!productUrl || typeof productUrl !== 'string') return null;
+export async function fetchProductImageUrl(productUrl: string, productTitle?: string): Promise<string | null> {
+  if (!productUrl || typeof productUrl !== 'string') {
+    if (productTitle) return searchProductImageByName(productTitle);
+    return null;
+  }
   const cleanUrl = productUrl.trim();
-  if (!cleanUrl.startsWith('http')) return null;
+  if (!cleanUrl.startsWith('http')) {
+    if (productTitle) return searchProductImageByName(productTitle);
+    return null;
+  }
 
   // Check cache first
   const cached = imageCache.get(cleanUrl);
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
     return cached.url;
+  }
+
+  // 1. Shopee Dedicated Engine (handles s.shopee.com.br, shope.ee, and product links)
+  if (cleanUrl.includes('shopee') || cleanUrl.includes('shope.ee')) {
+    const shopeeImg = await resolveShopeeProductImageUrl(cleanUrl);
+    if (shopeeImg) return shopeeImg;
   }
 
   const isAliExpress = cleanUrl.includes('aliexpress') || cleanUrl.includes('ali.ski');
@@ -192,11 +296,11 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
+    const timeout = setTimeout(() => controller.abort(), 4000);
 
     const res = await fetch(cleanUrl, {
       headers: {
-        'User-Agent': BROWSER_USER_AGENT,
+        'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
         Accept:
           'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -309,6 +413,12 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
     }
   }
 
+  // 8. 100% Reliable Fallback: Search image by product name if available
+  if (productTitle) {
+    const searchedImg = await searchProductImageByName(productTitle);
+    if (searchedImg) return searchedImg;
+  }
+
   return null;
 }
 
@@ -316,18 +426,21 @@ export async function fetchProductImageUrl(productUrl: string): Promise<string |
  * Downloads the product image and returns a pristine, normalized baseline JPEG Buffer ready for WhatsApp/Telegram dispatch
  */
 export async function fetchProductImageBuffer(
-  productUrl: string
+  productUrl: string,
+  productTitle?: string
 ): Promise<{ buffer: Buffer; url: string; mimeType: string } | null> {
   const cleanUrl = productUrl?.trim();
-  if (!cleanUrl) return null;
+  if (!cleanUrl && !productTitle) return null;
 
   // Check cache
-  const cached = imageCache.get(cleanUrl);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return { buffer: cached.buffer, url: cached.url, mimeType: cached.mimeType };
+  if (cleanUrl) {
+    const cached = imageCache.get(cleanUrl);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return { buffer: cached.buffer, url: cached.url, mimeType: cached.mimeType };
+    }
   }
 
-  const rawImageUrl = await fetchProductImageUrl(cleanUrl);
+  const rawImageUrl = await fetchProductImageUrl(cleanUrl, productTitle);
   if (!rawImageUrl) return null;
   const upgradedImageUrl = upgradeImageUrlToHighRes(rawImageUrl);
 
@@ -374,6 +487,17 @@ export async function fetchProductImageBuffer(
     finalUrlUsed = rawImageUrl;
   }
 
+  // 3. If still not normalized and productTitle provided, search by title as last-ditch guarantee
+  if (!normalized && productTitle) {
+    const fallbackSearchUrl = await searchProductImageByName(productTitle);
+    if (fallbackSearchUrl) {
+      normalized = await tryDownloadAndNormalize(fallbackSearchUrl);
+      if (normalized) {
+        finalUrlUsed = fallbackSearchUrl;
+      }
+    }
+  }
+
   if (!normalized) {
     return null;
   }
@@ -386,11 +510,13 @@ export async function fetchProductImageBuffer(
   };
 
   // Cache the result (keep max 150 items)
-  if (imageCache.size > 150) {
-    const firstKey = imageCache.keys().next().value;
-    if (firstKey) imageCache.delete(firstKey);
+  if (cleanUrl) {
+    if (imageCache.size > 150) {
+      const firstKey = imageCache.keys().next().value;
+      if (firstKey) imageCache.delete(firstKey);
+    }
+    imageCache.set(cleanUrl, result);
   }
-  imageCache.set(cleanUrl, result);
 
   console.log(
     `[ProductImageService] 📸 Foto oficial do produto normalizada com sucesso (${normalized.length} bytes JPEG): "${finalUrlUsed}"`

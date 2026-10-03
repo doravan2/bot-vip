@@ -516,7 +516,7 @@ export async function initBaileysSocket(): Promise<void> {
 
     const baileys = await import('@whiskeysockets/baileys');
     const makeWASocket = baileys.default || baileys.makeWASocket;
-    const { useMultiFileAuthState, DisconnectReason, downloadContentFromMessage } = baileys;
+    const { useMultiFileAuthState, DisconnectReason, downloadContentFromMessage, downloadMediaMessage } = baileys;
 
     const { state: authState, saveCreds } = await useMultiFileAuthState(authFolder);
 
@@ -620,7 +620,7 @@ export async function initBaileysSocket(): Promise<void> {
 
           const isChannel = remoteJid.endsWith('@newsletter');
           console.log(`[Listener WhatsApp] 📡 Mensagem recebida no ${isChannel ? 'Canal' : 'Grupo'} (${remoteJid}). Disparando análise...`);
-          await handleAutomaticReplicaMessage(msg, remoteJid, sock, downloadContentFromMessage);
+          await handleAutomaticReplicaMessage(msg, remoteJid, sock, downloadContentFromMessage, downloadMediaMessage);
         }
       } catch (err: any) {
         const errMsg = String(err?.message || err);
@@ -725,14 +725,30 @@ export async function initBaileysSocket(): Promise<void> {
  * Handles both encrypted group messages and unencrypted channels/newsletters CDN URLs.
  */
 async function downloadWhatsAppMediaSafe(
+  msg: any,
   imageMsg: any,
   downloadContentFromMessage: any,
+  downloadMediaMessage: any,
   isChannel: boolean
 ): Promise<Buffer | null> {
-  if (!imageMsg) return null;
+  if (!imageMsg && !msg) return null;
 
-  // 1. Direct Baileys decrypted download if mediaKey or downloadContentFromMessage is available
-  const rawKey = imageMsg.mediaKey;
+  // 1. Try Baileys downloadMediaMessage if msg is available (safest and most comprehensive)
+  if (downloadMediaMessage && msg?.message) {
+    try {
+      const buf = await downloadMediaMessage(msg, 'buffer', {});
+      if (buf && buf.length > 200) {
+        const normalized = await normalizeImageBuffer(buf);
+        if (normalized) {
+          console.log(`[Replica Zap] 📸 Imagem original baixada via downloadMediaMessage (${normalized.length} bytes)!`);
+          return normalized;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Direct Baileys decrypted download if mediaKey or downloadContentFromMessage is available
+  const rawKey = imageMsg?.mediaKey;
   const hasValidMediaKey =
     rawKey !== null &&
     rawKey !== undefined &&
@@ -753,38 +769,42 @@ async function downloadWhatsAppMediaSafe(
       }
       const finalBuffer = Buffer.concat(chunks);
       if (finalBuffer.length > 100) {
-        console.log(`[Replica Zap] 📸 Imagem original do canal/grupo baixada com sucesso (${finalBuffer.length} bytes)!`);
-        return finalBuffer;
+        const normalized = await normalizeImageBuffer(finalBuffer);
+        if (normalized) {
+          console.log(`[Replica Zap] 📸 Imagem original baixada via stream (${normalized.length} bytes)!`);
+          return normalized;
+        }
       }
     } catch {
       console.log('[Replica Zap] Tentando método alternativo de CDN para baixar imagem do canal...');
     }
   }
 
-  // 2. Direct CDN URL download from imageMsg.url
-  if (imageMsg.url && typeof imageMsg.url === 'string' && imageMsg.url.startsWith('http')) {
+  // 3. Direct CDN URL download from imageMsg.url
+  if (imageMsg?.url && typeof imageMsg.url === 'string' && imageMsg.url.startsWith('http')) {
     try {
-      const res = await fetch(imageMsg.url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        },
-      });
-      if (res.ok) {
-        const ab = await res.arrayBuffer();
-        if (ab.byteLength > 100) {
-          console.log(`[Replica Zap] 📸 Imagem original do canal/newsletter baixada via CDN direta (${ab.byteLength} bytes)!`);
-          return Buffer.from(ab);
-        }
+      const normalized = await normalizeImageBuffer(imageMsg.url);
+      if (normalized) {
+        console.log(`[Replica Zap] 📸 Imagem original baixada via CDN direta (${normalized.length} bytes)!`);
+        return normalized;
       }
     } catch (directErr) {
       console.log('[Replica Zap] Aviso ao tentar download direto via URL CDN:', directErr);
     }
   }
 
-  // 3. Do NOT return tiny 32px jpegThumbnail as main image because it causes pixelated/horrible quality!
-  // Return null so the pipeline automatically fetches the Full HD (1000px-1500px) official product photo from the offer link!
-  if (imageMsg.jpegThumbnail) {
-    console.log('[Replica Zap] ℹ️ Apenas miniatura (thumbnail de 32px) disponível no canal. Ignorando para buscar foto oficial Full HD do produto!');
+  // 4. Fallback: Miniatura preservada caso o download direto tenha falhado
+  if (imageMsg?.jpegThumbnail) {
+    try {
+      const thumbBuf = Buffer.isBuffer(imageMsg.jpegThumbnail)
+        ? imageMsg.jpegThumbnail
+        : Buffer.from(imageMsg.jpegThumbnail);
+      const normalizedThumb = await normalizeImageBuffer(thumbBuf);
+      if (normalizedThumb) {
+        console.log(`[Replica Zap] ℹ️ Miniatura do canal preservada como fallback (${normalizedThumb.length} bytes)!`);
+        return normalizedThumb;
+      }
+    } catch {}
   }
 
   return null;
@@ -799,7 +819,8 @@ async function handleAutomaticReplicaMessage(
   msg: any,
   remoteJid: string,
   sock: any,
-  downloadContentFromMessage: any
+  downloadContentFromMessage: any,
+  downloadMediaMessage?: any
 ): Promise<void> {
   try {
     if (isExplicitlyDisconnected || !state.isConnected) {
@@ -924,7 +945,7 @@ async function handleAutomaticReplicaMessage(
     if (!imageMsg && !rawCaption) return;
 
     // Download image buffer safely if image present in WhatsApp message
-    const imageBuffer = await downloadWhatsAppMediaSafe(imageMsg, downloadContentFromMessage, isChannel);
+    const imageBuffer = await downloadWhatsAppMediaSafe(msg, imageMsg, downloadContentFromMessage, downloadMediaMessage, isChannel);
 
     await executeReplicaPipeline({
       matchedRule,
@@ -1225,10 +1246,17 @@ export async function executeReplicaPipeline(params: {
     );
 
     // =========================================================
-    // 5. REGRA DE IMAGEM: PRESERVAR FOTO ORIGINAL OU EXTRAIR DO LINK
+    // 5. REGRA DE IMAGEM: PRESERVAR FOTO ORIGINAL OU EXTRAIR DO LINK/PRODUTO
     // =========================================================
     const candidateUrl = finalMonetizedUrl || pureProductUrl || originalUrl || monetizedUrl;
     let imageSource: 'source-media' | 'auto-link-photo' | 'none' = 'none';
+
+    // Extrai o título limpo do produto (primeira linha da copy) para busca de alta precisão
+    const productTitle = (finalCleanedCopy || rawCaption || '')
+      .split('\n')[0]
+      .replace(/^[💥🔥⚡🎉📢🚨🛒✨👉💵🎟]+/gu, '')
+      .replace(/(?:VALOR|CUPOM|R\$|\bhttps?:\/\/).*$/gis, '')
+      .trim();
 
     // 1. Se a mensagem já veio com foto do canal/grupo concorrente:
     // Normaliza e preserva com prioridade máxima (evita sobrescrever com web scraping arriscado)
@@ -1239,13 +1267,13 @@ export async function executeReplicaPipeline(params: {
         imageSource = 'source-media';
         console.log(`[Replica Pipeline] 📸 Foto original da fonte preservada e normalizada (${imageBuffer.length} bytes JPEG)!`);
       } else {
-        console.log('[Replica Pipeline] ℹ️ Foto recebida era inválida ou miniatura ilegível. Buscando foto do produto via link...');
+        console.log('[Replica Pipeline] ℹ️ Foto recebida era inválida ou miniatura ilegível. Buscando foto oficial do produto...');
         imageBuffer = null;
       }
     }
 
-    // 2. Se a mensagem NÃO continha foto válida, extrai a foto oficial do link do produto
-    if (!imageBuffer && candidateUrl && matchedRule.autoFetchProductImage !== false) {
+    // 2. Se a mensagem NÃO continha foto válida, extrai a foto oficial do link do produto ou pelo nome
+    if (!imageBuffer && matchedRule.autoFetchProductImage !== false) {
       // 2.a Tentar primeiro pela foto obtida da API do Mercado Livre (se houver)
       if (foto_capturada_meli) {
         try {
@@ -1260,20 +1288,21 @@ export async function executeReplicaPipeline(params: {
         }
       }
 
-      // 2.b Se não veio da API ou se for outro marketplace, extrai a foto HD oficial do link via productImageService
-      if (!imageBuffer) {
+      // 2.b Se não veio da API ou se for outro marketplace (Shopee, Amazon, AliExpress, Magalu, Temu),
+      // extrai a foto HD oficial via productImageService com fallback para busca de imagem por título
+      if (!imageBuffer && (candidateUrl || productTitle)) {
         try {
-          const photoData = await fetchProductImageBuffer(candidateUrl);
+          const photoData = await fetchProductImageBuffer(candidateUrl || '', productTitle);
           if (photoData?.buffer) {
             const normalizedScraped = await normalizeImageBuffer(photoData.buffer);
             if (normalizedScraped) {
               imageBuffer = normalizedScraped;
               imageSource = 'auto-link-photo';
-              console.log(`[Replica Pipeline] 📸 Foto oficial Full HD do produto extraída do link com sucesso (${imageBuffer.length} bytes JPEG): ${photoData.url}`);
+              console.log(`[Replica Pipeline] 📸 Foto oficial Full HD do produto obtida com sucesso (${imageBuffer.length} bytes JPEG): ${photoData.url}`);
             }
           }
         } catch (pagePhotoErr) {
-          console.warn('[Replica Pipeline] Erro ao extrair foto HD do link:', pagePhotoErr);
+          console.warn('[Replica Pipeline] Erro ao extrair foto HD do produto:', pagePhotoErr);
         }
       }
     }
@@ -1599,15 +1628,21 @@ export async function sendDirectReplicaDeal(params: {
       finalBuffer = await normalizeImageBuffer(params.imageUrl);
     }
 
-    // Auto-Foto: Se não tem foto e autoFetchImage for permitido, extrai automaticamente do link da copy
+    // Auto-Foto: Se não tem foto e autoFetchImage for permitido, extrai automaticamente do link da copy ou pelo título
     if (!finalBuffer && params.autoFetchImage !== false) {
       const urls = params.copy.match(/https?:\/\/[^\s]+/g);
-      const productUrl = urls?.find(u => !u.includes('chat.whatsapp.com') && !u.includes('t.me') && !u.includes('wa.me'));
-      if (productUrl) {
+      const productUrl = urls?.find(u => !u.includes('chat.whatsapp.com') && !u.includes('t.me') && !u.includes('wa.me')) || '';
+      const productTitle = params.copy
+        .split('\n')[0]
+        .replace(/^[💥🔥⚡🎉📢🚨🛒✨👉💵🎟]+/gu, '')
+        .replace(/(?:VALOR|CUPOM|R\$|\bhttps?:\/\/).*$/gis, '')
+        .trim();
+
+      if (productUrl || productTitle) {
         // Aguarda o link carregar por si só a imagem do produto antes de enviar
         await new Promise((resolve) => setTimeout(resolve, 1500));
         try {
-          const photoData = await fetchProductImageBuffer(productUrl);
+          const photoData = await fetchProductImageBuffer(productUrl, productTitle);
           if (photoData?.buffer) {
             finalBuffer = await normalizeImageBuffer(photoData.buffer);
             if (finalBuffer) {
